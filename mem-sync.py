@@ -17,7 +17,7 @@ import json
 import os
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -63,7 +63,7 @@ def get_last_synced_line(conn, source_file):
 def update_sync_state(conn, source_file, last_line):
     """Update the sync state for the source file."""
     cursor = conn.cursor()
-    now = datetime.utcnow().isoformat() + 'Z'
+    now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     cursor.execute(
         '''
         INSERT INTO sync_state (source_file, last_line, last_sync)

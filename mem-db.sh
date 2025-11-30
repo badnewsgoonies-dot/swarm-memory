@@ -106,7 +106,13 @@ CREATE TABLE IF NOT EXISTS chunks (
     anchor_session TEXT,
     anchor_source TEXT,
     source_line INTEGER,
-    created_at TEXT DEFAULT (datetime('now'))
+    created_at TEXT DEFAULT (datetime('now')),
+    -- Multi-chat fields (Phase 3)
+    scope TEXT DEFAULT 'shared',
+    chat_id TEXT,
+    agent_role TEXT,
+    visibility TEXT DEFAULT 'public',
+    project_id TEXT
 )
 """)
 
@@ -121,6 +127,9 @@ CREATE TABLE IF NOT EXISTS sync_state (
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_type ON chunks(anchor_type)")
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_topic ON chunks(anchor_topic)")
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON chunks(timestamp)")
+cursor.execute("CREATE INDEX IF NOT EXISTS idx_scope ON chunks(scope)")
+cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_id ON chunks(chat_id)")
+cursor.execute("CREATE INDEX IF NOT EXISTS idx_visibility ON chunks(visibility)")
 
 conn.commit()
 conn.close()
@@ -128,7 +137,7 @@ PYEOF
 
     echo "Database initialized successfully."
     echo "Schema created with tables: chunks, sync_state"
-    echo "Indexes created: idx_type, idx_topic, idx_timestamp"
+    echo "Indexes created: idx_type, idx_topic, idx_timestamp, idx_scope, idx_chat_id, idx_visibility"
 }
 
 cmd_migrate() {
@@ -388,7 +397,12 @@ SELECT
     anchor_rationale,
     timestamp,
     anchor_session,
-    anchor_source
+    anchor_source,
+    scope,
+    chat_id,
+    agent_role,
+    visibility,
+    project_id
 FROM chunks
 """
 
@@ -423,7 +437,7 @@ else:
     }
 
     for row in results:
-        anchor_type, topic, text, choice, rationale, ts, session, source = row
+        anchor_type, topic, text, choice, rationale, ts, session, source, scope, chat_id, agent_role, visibility, project_id = row
 
         type_label = type_labels.get(anchor_type, anchor_type or '?')
         topic = topic or '?'
@@ -438,7 +452,16 @@ else:
         if choice:
             print(f"  \033[32mChoice:\033[0m {choice}")
         ts_short = ts[:10] if len(ts) >= 10 else ts
-        print(f"  \033[90m{ts_short} | {session}\033[0m")
+        meta_parts = [ts_short, session]
+        if scope and scope != 'shared':
+            meta_parts.append(f"scope={scope}")
+        if chat_id:
+            meta_parts.append(f"chat={chat_id[:8]}...")
+        if agent_role:
+            meta_parts.append(f"role={agent_role}")
+        if visibility and visibility != 'public':
+            meta_parts.append(f"vis={visibility}")
+        print(f"  \033[90m{' | '.join(meta_parts)}\033[0m")
         print()
 PYEOF
 }
@@ -543,7 +566,7 @@ entry_id = cursor.lastrowid
 conn.commit()
 conn.close()
 
-# Append to anchors.jsonl
+# Append to anchors.jsonl and update sync_state
 # Format: [type, topic, text, choice, rationale, timestamp, session, source]
 anchors_file = os.path.join(script_dir, "anchors.jsonl")
 jsonl_entry = [
@@ -560,6 +583,24 @@ jsonl_entry = [
 try:
     with open(anchors_file, 'a') as f:
         f.write(json.dumps(jsonl_entry) + '\n')
+
+    # Update sync_state to prevent duplicate import on next sync
+    line_count = sum(1 for _ in open(anchors_file))
+    conn2 = sqlite3.connect(db_path)
+    try:
+        from datetime import UTC
+        now = datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ')
+    except ImportError:
+        now = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+    conn2.execute("""
+        INSERT INTO sync_state (source_file, last_line, last_sync)
+        VALUES ('anchors.jsonl', ?, ?)
+        ON CONFLICT(source_file) DO UPDATE SET
+            last_line = excluded.last_line,
+            last_sync = excluded.last_sync
+    """, (line_count, now))
+    conn2.commit()
+    conn2.close()
 except Exception as e:
     print(f"WARNING: Failed to append to anchors.jsonl: {e}", file=sys.stderr)
 

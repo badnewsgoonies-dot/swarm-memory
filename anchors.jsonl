@@ -34,3 +34,6 @@
 ["d", "architecture", "Use microservices", "microservices", "Better scalability", "2025-11-30T20:20:45Z", "design_review", "meeting_notes"]
 ["q", "database", "Should we use PostgreSQL or MySQL?", null, null, "2025-11-30T20:21:11Z", "planning", "brainstorm"]
 ["n", null, "Verification test", null, null, "2025-11-30T20:21:44Z", null, null]
+["n", null, "assessment note", null, null, "2025-11-30T20:39:27Z", null, null]
+["f", null, "role-based fact", null, null, "2025-11-30T20:51:29Z", null, null]
+["n", null, "Fix test", null, null, "2025-11-30T20:55:24Z", null, null]
