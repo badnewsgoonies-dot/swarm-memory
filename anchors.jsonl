@@ -46,3 +46,6 @@
 ["f", "memory", "Chats default to reading anchors.jsonl directly instead of using CLI queries - need stronger CLAUDE.md instructions", null, null, "2025-12-01T00:35:47Z", "phase4-5", null]
 ["f", "memory", "CLAUDE.md instructions successfully guide chats to use CLI queries instead of reading raw JSONL", null, null, "2025-12-01T00:43:32Z", "phase4-5", null]
 ["d", "embeddings", "Use local embeddings with all-MiniLM-L6-v2, no API key required", "local-model", "Works on CPU, free, 384 dimensions", "2025-12-01T02:05:52Z", "phase4-5", null]
+["d", "embeddings", "Local embeddings work without API key using sentence-transformers and all-MiniLM-L6-v2", "local-backend", "Installed on older PC, portable to 1060 PC", "2025-12-01T02:41:31Z", "memory-setup", null]
+["f", "setup", "Venv with sentence-transformers needed for embeddings: python3 -m venv .venv && . .venv/bin/activate && pip install sentence-transformers", null, null, "2025-12-01T02:41:31Z", "memory-setup", null]
+["f", "sync", "memory.db is gitignored - to sync across machines: git pull, then ./mem-db.sh init && ./mem-db.sh sync", null, null, "2025-12-01T02:41:31Z", "memory-setup", null]
