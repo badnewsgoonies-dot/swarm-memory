@@ -299,9 +299,9 @@ The governor enforces safety rails on autonomous daemon actions.
 
 | Decision | Actions | Behavior |
 |----------|---------|----------|
-| **ALLOW** | `write_memory` (f/n/q/a), `mem_search`, `sleep`, `done` | Execute immediately |
-| **ESCALATE** | `write_memory` (d), `consolidate`, `propose_config_update` | Queue for human review |
-| **DENY** | `exec`, `delete`, `drop`, `truncate` | Block immediately |
+| **ALLOW** | `write_memory` (f/n/q/a), `mem_search`, `read_file`, `list_files`, `search_text`, `git_log`, `git_diff`, `git_status`, `run` (safe commands), `sleep`, `done` | Execute immediately |
+| **ESCALATE** | `write_memory` (d), `consolidate`, `propose_config_update`, `edit_file`, `exec`, `http_request` | Queue for human review |
+| **DENY** | `delete`, `drop`, `truncate` | Block immediately |
 
 ### 9.2. CLI Usage
 
@@ -344,7 +344,36 @@ The daemon automatically uses the governor unless disabled:
 ### 9.5. Safety Guarantees
 
 1. **Decisions require human approval**: No autonomous decision-making without review
-2. **All actions logged**: Complete audit trail in `audit_log` table
-3. **Dangerous ops blocked**: `exec`, `delete`, `drop` always denied
+2. **All actions logged**: Complete audit trail in `audit_log` (including unrestricted mode)
+3. **Dangerous ops blocked**: `delete`/`drop`/`truncate` always denied
 4. **Escalation queue**: Blocked actions don't halt daemon, just queue for review
+5. **Unrestricted flag**: `--unrestricted` bypasses gates (exec/edit/http/decisions) but still logs; use intentionally
 
+## 10. Repo-Aware Daemon (vale-village)
+
+- Reviewed mode (safe defaults, scoped to repo, edits/exec/http escalate):
+  ```bash
+  ./swarm_daemon.py --objective "Improve build reliability" --repo-root /home/geni/Documents/vale-village
+  ```
+- Unrestricted mode (full control, still audited):
+  ```bash
+  ./swarm_daemon.py --objective "Diagnose and rebuild" --repo-root /home/geni/Documents/vale-village --unrestricted
+  ```
+
+### 10.1. Available Actions (repo-aware)
+- Read/search: `read_file`, `list_files`, `search_text`, `git_log`, `git_diff`, `git_status`
+- Commands: `run {"cmd": "npm test"}` (safe prefixes only in reviewed mode), `exec` (unrestricted only)
+- Edits: `edit_file {"path": "src/file.ts", "content": "...", "mode": "replace|append"}` (unrestricted only)
+- HTTP: `http_request` (unrestricted only)
+- Memory: `write_memory`, `mem_search`, `consolidate`, `sleep`, `done`
+
+### 10.2. Command Allowlist (reviewed mode)
+- Safe prefixes: `npm`, `yarn`, `pnpm`, `bun`, `go`, `cargo`, `python`, `pip`, `pytest`, `make`, `node`
+- Everything else requires `--unrestricted` and is still logged to `audit_log`.
+
+### 10.3. Suggested Flow for a Better Rebuild
+1. Inspect repo: `list_files`, `git_status`, `git_log` (recent), `git_diff` (stat).
+2. Understand scripts: `read_file package.json`, search for `"build"`/`"test"`.
+3. Run checks: `run {"cmd": "npm test"}` then `run {"cmd": "npm run build"}` (or equivalents).
+4. Capture findings in memory (`write_memory` facts/questions); propose decisions as `write_memory t=d` (escalates unless unrestricted).
+5. If edits are required, either enable `--unrestricted` or use the governor approval flow via `pending_changes`.

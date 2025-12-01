@@ -142,6 +142,33 @@ cursor.execute("CREATE INDEX IF NOT EXISTS idx_scope ON chunks(scope)")
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_id ON chunks(chat_id)")
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_visibility ON chunks(visibility)")
 
+# Pending changes and audit log (governor)
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS pending_changes (
+    id INTEGER PRIMARY KEY,
+    action_type TEXT NOT NULL,
+    action_data TEXT NOT NULL,
+    proposed_by TEXT,
+    proposed_at TEXT DEFAULT (datetime('now')),
+    status TEXT DEFAULT 'pending',
+    reviewed_by TEXT,
+    reviewed_at TEXT,
+    review_notes TEXT
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY,
+    timestamp TEXT DEFAULT (datetime('now')),
+    action_type TEXT NOT NULL,
+    action_data TEXT,
+    decision TEXT NOT NULL,
+    reason TEXT,
+    actor TEXT
+)
+""")
+
 conn.commit()
 conn.close()
 PYEOF

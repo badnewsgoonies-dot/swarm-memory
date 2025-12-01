@@ -3,9 +3,11 @@
 governor.py - Action classification and enforcement for autonomous daemon
 
 Classifies actions as:
-- ALLOW: Auto-approve (memory writes: facts, notes, questions, actions)
-- ESCALATE: Queue for human review (decisions, config changes, code edits)
+- ALLOW: Auto-approve safe actions (memory writes f/n/q/a, read-only repo/git, run allowed build commands)
+- ESCALATE: Queue for human review (decisions, consolidations, edits, exec/http)
 - DENY: Block immediately (dangerous operations)
+
+Unrestricted mode (--unrestricted) ALLOWs everything but still logs to audit_log.
 
 Usage:
     from governor import Governor
@@ -36,15 +38,16 @@ ALLOW_ACTIONS = {
         'types': ['f', 'n', 'q', 'a'],  # facts, notes, questions, actions
         'description': 'Memory writes (non-decisions)'
     },
-    'mem_search': {
-        'description': 'Read-only memory search'
-    },
-    'sleep': {
-        'description': 'Pause execution'
-    },
-    'done': {
-        'description': 'Mark objective complete'
-    }
+    'mem_search': {'description': 'Read-only memory search'},
+    'read_file': {'description': 'Repo file read'},
+    'list_files': {'description': 'Repo file list'},
+    'search_text': {'description': 'Repo text search'},
+    'git_log': {'description': 'Git history read'},
+    'git_diff': {'description': 'Git diff read'},
+    'git_status': {'description': 'Git status read'},
+    'run': {'description': 'Run allowed build/test commands'},
+    'sleep': {'description': 'Pause execution'},
+    'done': {'description': 'Mark objective complete'}
 }
 
 ESCALATE_ACTIONS = {
@@ -52,16 +55,14 @@ ESCALATE_ACTIONS = {
         'types': ['d'],  # decisions require review
         'description': 'Decision writes require human review'
     },
-    'consolidate': {
-        'description': 'Memory consolidation modifies existing entries'
-    },
-    'propose_config_update': {
-        'description': 'Configuration changes require review'
-    }
+    'consolidate': {'description': 'Memory consolidation modifies existing entries'},
+    'propose_config_update': {'description': 'Configuration changes require review'},
+    'edit_file': {'description': 'File edits require review'},
+    'exec': {'description': 'Arbitrary commands require review'},
+    'http_request': {'description': 'HTTP calls require review'}
 }
 
 DENY_ACTIONS = {
-    'exec': 'Arbitrary code execution not allowed',
     'delete': 'Direct deletion not allowed',
     'drop': 'Schema changes not allowed',
     'truncate': 'Bulk deletion not allowed'
@@ -71,16 +72,22 @@ DENY_ACTIONS = {
 class Governor:
     """Action classification and enforcement"""
 
-    def __init__(self, db_path):
+    def __init__(self, db_path, unrestricted=False):
         self.db_path = db_path
         self.actor = 'governor'
+        self.unrestricted = unrestricted
 
     def check_action(self, action_data):
         """
         Check if action is allowed.
         Returns: {'decision': 'ALLOW'|'ESCALATE'|'DENY', 'reason': str, 'pending_id': int|None}
         """
-        action = action_data.get('action', '')
+        action = action_data.get('action', '').lower()
+
+        # Unrestricted mode: allow but log
+        if self.unrestricted:
+            self._log_audit(action, action_data, 'ALLOW', 'Unrestricted mode')
+            return {'decision': 'ALLOW', 'reason': 'Unrestricted mode'}
 
         # Check DENY list first
         for deny_action, reason in DENY_ACTIONS.items():
@@ -195,16 +202,16 @@ class Governor:
         cursor.execute("""
             UPDATE pending_changes
             SET status = 'approved', reviewed_by = ?, reviewed_at = ?, review_notes = ?
-            WHERE id = ?
+            WHERE id = ? AND status = 'pending'
         """, (reviewer, now, notes, pending_id))
 
         # Get the action data for execution
-        cursor.execute("SELECT action_type, action_data FROM pending_changes WHERE id = ?", (pending_id,))
+        cursor.execute("SELECT action_type, action_data, status FROM pending_changes WHERE id = ?", (pending_id,))
         row = cursor.fetchone()
         conn.commit()
         conn.close()
 
-        if row:
+        if row and row[2] == 'approved':
             self._log_audit(row[0], json.loads(row[1]), 'APPROVED', f"Approved by {reviewer}: {notes}")
             return {'action_type': row[0], 'action_data': json.loads(row[1])}
         return None
@@ -222,7 +229,7 @@ class Governor:
         cursor.execute("""
             UPDATE pending_changes
             SET status = 'rejected', reviewed_by = ?, reviewed_at = ?, review_notes = ?
-            WHERE id = ?
+            WHERE id = ? AND status = 'pending'
         """, (reviewer, now, notes, pending_id))
         conn.commit()
         conn.close()
@@ -255,6 +262,7 @@ class Governor:
 def main():
     parser = argparse.ArgumentParser(description='Governor - Action enforcement')
     parser.add_argument('--db', default=str(SCRIPT_DIR / 'memory.db'), help='Database path')
+    parser.add_argument('--unrestricted', action='store_true', help='Allow all actions (logged)')
     subparsers = parser.add_subparsers(dest='command', help='Commands')
 
     # check command
@@ -279,7 +287,7 @@ def main():
     audit_parser.add_argument('--limit', type=int, default=20, help='Number of entries')
 
     args = parser.parse_args()
-    gov = Governor(args.db)
+    gov = Governor(args.db, unrestricted=args.unrestricted)
 
     if args.command == 'check':
         action_data = json.loads(args.action_json)
