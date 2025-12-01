@@ -383,6 +383,47 @@ def execute_action(action_data, repo_root: Path, unrestricted: bool):
         output, success = run_command(cmd, repo_root, True)
         return {"success": success, "output": output[:4000]}
 
+    # Dependency management ----------------------------------------------------
+    if action == "check_deps":
+        # Check if node_modules exists and lockfile is in sync
+        pkg_manager = action_data.get("manager", "pnpm")  # pnpm, npm, yarn
+        node_modules = repo_root / "node_modules"
+
+        if not node_modules.exists():
+            return {"success": True, "status": "missing", "output": "node_modules not found, run install"}
+
+        # Check lockfile freshness
+        lockfiles = {
+            "pnpm": "pnpm-lock.yaml",
+            "npm": "package-lock.json",
+            "yarn": "yarn.lock"
+        }
+        lockfile = repo_root / lockfiles.get(pkg_manager, "pnpm-lock.yaml")
+        pkg_json = repo_root / "package.json"
+
+        if not lockfile.exists():
+            return {"success": True, "status": "no-lockfile", "output": f"No {lockfile.name} found"}
+
+        # Compare timestamps - if package.json is newer than lockfile, deps might be stale
+        if pkg_json.exists() and pkg_json.stat().st_mtime > lockfile.stat().st_mtime:
+            return {"success": True, "status": "stale", "output": "package.json newer than lockfile, consider reinstall"}
+
+        # Quick validation with frozen lockfile
+        if pkg_manager == "pnpm":
+            cmd = "pnpm install --frozen-lockfile --dry-run 2>&1 || echo 'needs-install'"
+        elif pkg_manager == "npm":
+            cmd = "npm ci --dry-run 2>&1 || echo 'needs-install'"
+        else:
+            cmd = "yarn install --frozen-lockfile --check-files 2>&1 || echo 'needs-install'"
+
+        try:
+            result = subprocess.run(cmd, shell=True, cwd=str(repo_root), capture_output=True, text=True, timeout=30)
+            if "needs-install" in result.stdout or result.returncode != 0:
+                return {"success": True, "status": "outdated", "output": "Dependencies need refresh"}
+            return {"success": True, "status": "ok", "output": "Dependencies up to date"}
+        except Exception as e:
+            return {"success": True, "status": "unknown", "output": f"Could not verify: {e}"}
+
     # Command execution --------------------------------------------------------
     if action == "run":
         cmd_str = action_data.get("cmd", "")
@@ -540,6 +581,7 @@ AVAILABLE ACTIONS (one JSON object):
 - {{"action": "git_log", "limit": 10}}
 - {{"action": "git_diff", "path": "src"}}
 - {{"action": "git_status"}}
+- {{"action": "check_deps", "manager": "pnpm"}}  # returns status: ok|missing|stale|outdated
 - {{"action": "run", "cmd": "npm test"}}  # safe commands only unless unrestricted
 - {{"action": "edit_file", "path": "file", "content": "...", "mode": "replace|append"}}  # unrestricted only
 - {{"action": "exec", "cmd": "cd src && ls -la", "cwd": "/path/to/dir"}}  # unrestricted, shell=True
@@ -559,7 +601,11 @@ AVAILABLE ACTIONS (one JSON object):
             prompt += f"- {h.get('action', '?')}: {h.get('result', {}).get('output', '')[:100]}...\n"
         prompt += "\n"
 
-    prompt += """Decide your next action. Output ONLY valid JSON for one action.
+    prompt += """TIPS:
+- Use check_deps before running install to avoid unnecessary reinstalls
+- Use CI=true for pnpm/npm in non-interactive environments
+
+Decide your next action. Output ONLY valid JSON for one action.
 If the objective is complete, use the "done" action.
 
 Your action:"""
