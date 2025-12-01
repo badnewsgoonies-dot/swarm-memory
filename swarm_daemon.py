@@ -398,9 +398,30 @@ def execute_action(action_data, repo_root: Path, unrestricted: bool):
         cmd_str = action_data.get("cmd", "")
         if not cmd_str:
             return {"success": False, "error": "Missing cmd"}
-        cmd = shlex.split(cmd_str)
-        output, success = run_command(cmd, repo_root, True, ())
-        return {"success": success, "output": output[:4000]}
+        # Support cwd parameter for working directory
+        cwd_str = action_data.get("cwd", "")
+        if cwd_str:
+            exec_cwd = Path(cwd_str).expanduser().resolve()
+            if not exec_cwd.exists():
+                return {"success": False, "error": f"cwd does not exist: {exec_cwd}"}
+        else:
+            exec_cwd = repo_root
+        # Use shell=True to support shell built-ins (cd, &&, pipes, etc.)
+        try:
+            result = subprocess.run(
+                cmd_str,
+                shell=True,
+                cwd=str(exec_cwd),
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            output = result.stdout + result.stderr
+            return {"success": result.returncode == 0, "output": output.strip()[:4000]}
+        except subprocess.TimeoutExpired:
+            return {"success": False, "error": "Command timed out"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     if action == "edit_file":
         path_str = action_data.get("path", "")
@@ -521,7 +542,7 @@ AVAILABLE ACTIONS (one JSON object):
 - {{"action": "git_status"}}
 - {{"action": "run", "cmd": "npm test"}}  # safe commands only unless unrestricted
 - {{"action": "edit_file", "path": "file", "content": "...", "mode": "replace|append"}}  # unrestricted only
-- {{"action": "exec", "cmd": "ls -la"}}  # unrestricted only
+- {{"action": "exec", "cmd": "cd src && ls -la", "cwd": "/path/to/dir"}}  # unrestricted, shell=True
 - {{"action": "http_request", "method": "GET", "url": "https://..."}}
 - {{"action": "sleep", "seconds": 5}}
 - {{"action": "done", "summary": "What was accomplished"}}
