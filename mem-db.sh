@@ -15,6 +15,12 @@
 #   ./mem-db.sh embed --force     # Re-embed even if already embedded
 #   ./mem-db.sh semantic "query"  # Semantic search with hybrid scoring
 #   ./mem-db.sh semantic "query" --limit 10 --tau 7 --beta 0.3
+#   ./mem-db.sh render [filters]  # Render entries in compact glyph format for LLM
+#   ./mem-db.sh consolidate --recent  # Consolidate most recent entry
+#   ./mem-db.sh consolidate --id 123  # Consolidate specific entry
+#   ./mem-db.sh consolidate --all     # Consolidate all entries
+#   ./mem-db.sh prune 30              # Delete deprecated entries older than 30 days
+#   ./mem-db.sh prune --dry-run       # Preview what would be pruned
 #
 # Query filters (same syntax as mem-search.sh):
 #   t=d              # type = decision (d/q/a/f/n)
@@ -173,7 +179,10 @@ columns_to_add = [
     ("project_id", "TEXT"),
     ("embedding", "BLOB"),
     ("embedding_model", "TEXT"),
-    ("embedding_dim", "INTEGER")
+    ("embedding_dim", "INTEGER"),
+    ("status", "TEXT DEFAULT 'active'"),
+    ("superseded_by", "INTEGER"),
+    ("superseded_at", "TEXT")
 ]
 
 added_columns = []
@@ -667,6 +676,225 @@ cmd_semantic() {
     $PYTHON_BIN "$semantic_script" --db "$DB_FILE" "$@"
 }
 
+cmd_consolidate() {
+    local consolidate_script="$SCRIPT_DIR/mem-consolidate.py"
+    if [[ ! -x "$consolidate_script" ]]; then
+        echo "ERROR: mem-consolidate.py not found or not executable" >&2
+        exit 1
+    fi
+
+    # Pass all arguments through
+    $PYTHON_BIN "$consolidate_script" --db "$DB_FILE" "$@"
+}
+
+cmd_prune() {
+    # Prune deprecated entries older than N days
+    if [[ ! -f "$DB_FILE" ]]; then
+        echo "Database not found: $DB_FILE" >&2
+        exit 1
+    fi
+
+    local days="30"
+    local dry_run="0"
+    for arg in "$@"; do
+        if [[ "$arg" == "--dry-run" ]]; then
+            dry_run="1"
+        elif [[ "$arg" =~ ^[0-9]+$ ]]; then
+            days="$arg"
+        fi
+    done
+
+    $PYTHON_BIN - "$DB_FILE" "$days" "$dry_run" <<'PYEOF'
+import sys
+import sqlite3
+from datetime import datetime, timedelta
+
+db_path = sys.argv[1]
+days = int(sys.argv[2])
+dry_run = sys.argv[3] == "1"
+
+try:
+    from datetime import UTC
+    cutoff = (datetime.now(UTC) - timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')
+except ImportError:
+    cutoff = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+conn = sqlite3.connect(db_path)
+cursor = conn.cursor()
+
+# Find entries to prune
+cursor.execute("""
+    SELECT id, anchor_type, anchor_topic, text, status, superseded_at
+    FROM chunks
+    WHERE status IN ('deprecated', 'superseded', 'duplicate')
+      AND superseded_at < ?
+""", (cutoff,))
+
+rows = cursor.fetchall()
+
+if not rows:
+    print(f"No entries older than {days} days to prune.")
+    sys.exit(0)
+
+print(f"Found {len(rows)} entries to prune (older than {days} days):")
+for row in rows:
+    cid, ctype, ctopic, text, status, superseded_at = row
+    text_short = (text or "")[:60].replace('\n', ' ')
+    print(f"  - {cid} [{status}] {ctopic}: {text_short}...")
+
+if dry_run:
+    print(f"\n(dry-run: would delete {len(rows)} entries)")
+else:
+    cursor.execute("""
+        DELETE FROM chunks
+        WHERE status IN ('deprecated', 'superseded', 'duplicate')
+          AND superseded_at < ?
+    """, (cutoff,))
+    conn.commit()
+    print(f"\nDeleted {len(rows)} entries.")
+
+conn.close()
+PYEOF
+}
+
+cmd_render() {
+    # Render memory entries in compact glyph format for LLM consumption
+    # Format: [TYPE][topic=TOPIC][ts=YYYY-MM-DD] CONTENT
+    # Optional: [choice=X] for decisions
+    if [[ ! -f "$DB_FILE" ]]; then
+        echo "Database not found: $DB_FILE" >&2
+        echo "Run './mem-db.sh init' first." >&2
+        exit 1
+    fi
+
+    $PYTHON_BIN - "$DB_FILE" "$@" <<'PYEOF'
+import sys
+import sqlite3
+
+db_path = sys.argv[1]
+filters = sys.argv[2:]
+
+# Type abbreviation expansion
+def expand_type(t):
+    type_map = {
+        'd': 'd', 'decision': 'd',
+        'q': 'q', 'question': 'q',
+        'a': 'a', 'action': 'a',
+        'f': 'f', 'fact': 'f',
+        'n': 'n', 'note': 'n'
+    }
+    return type_map.get(t.lower(), t)
+
+# Type label for output (uppercase single char)
+def type_label(t):
+    return {
+        'd': 'D', 'q': 'Q', 'a': 'A', 'f': 'F', 'n': 'N'
+    }.get(t, '?')
+
+# Parse filters
+where_clauses = []
+params = {}
+limit = 20
+
+for f in filters:
+    if '=' not in f:
+        continue
+    key, val = f.split('=', 1)
+
+    if key == 't' or key == 'type':
+        params['type'] = expand_type(val)
+        where_clauses.append("anchor_type = :type")
+    elif key == 'topic':
+        params['topic'] = val
+        where_clauses.append("anchor_topic = :topic")
+    elif key == 'text':
+        params['text'] = f"%{val}%"
+        where_clauses.append("text LIKE :text")
+    elif key == 'session':
+        params['session'] = val
+        where_clauses.append("anchor_session = :session")
+    elif key == 'source':
+        params['source'] = val
+        where_clauses.append("anchor_source = :source")
+    elif key == 'choice':
+        params['choice'] = val
+        where_clauses.append("anchor_choice = :choice")
+    elif key == 'status':
+        params['status'] = val
+        where_clauses.append("anchor_choice = :status")
+    elif key == 'since':
+        params['since'] = f"{val}T00:00:00Z"
+        where_clauses.append("timestamp >= :since")
+    elif key == 'until':
+        params['until'] = f"{val}T23:59:59Z"
+        where_clauses.append("timestamp <= :until")
+    elif key == 'scope':
+        params['scope'] = val
+        where_clauses.append("scope = :scope")
+    elif key == 'chat_id':
+        params['chat_id'] = val
+        where_clauses.append("chat_id = :chat_id")
+    elif key == 'role':
+        params['role'] = val
+        where_clauses.append("agent_role = :role")
+    elif key == 'visibility':
+        params['visibility'] = val
+        where_clauses.append("visibility = :visibility")
+    elif key == 'project':
+        params['project'] = val
+        where_clauses.append("project_id = :project")
+    elif key == 'limit':
+        limit = int(val)
+
+# Build query
+query = """
+SELECT
+    anchor_type,
+    anchor_topic,
+    text,
+    anchor_choice,
+    timestamp
+FROM chunks
+"""
+
+if where_clauses:
+    query += " WHERE " + " AND ".join(where_clauses)
+
+query += f" ORDER BY timestamp DESC LIMIT {limit}"
+
+# Execute query
+conn = sqlite3.connect(db_path)
+cursor = conn.cursor()
+cursor.execute(query, params)
+results = cursor.fetchall()
+conn.close()
+
+if not results:
+    sys.exit(0)
+
+# Output in compact glyph format
+for row in results:
+    anchor_type, topic, text, choice, ts = row
+
+    # Build glyph header
+    t = type_label(anchor_type)
+    topic_str = topic or "general"
+    ts_short = ts[:10] if ts and len(ts) >= 10 else "?"
+
+    # Core header: [TYPE][topic=X][ts=YYYY-MM-DD]
+    header = f"[{t}][topic={topic_str}][ts={ts_short}]"
+
+    # Add choice for decisions
+    if anchor_type == 'd' and choice:
+        header += f"[choice={choice}]"
+
+    # Content (strip newlines for compact output)
+    content = (text or "").replace('\n', ' ').strip()
+
+    print(f"{header} {content}")
+PYEOF
+}
+
 main() {
     local cmd="${1:-help}"
     shift || true
@@ -680,7 +908,10 @@ main() {
         write) cmd_write "$@" ;;
         embed) cmd_embed "$@" ;;
         semantic) cmd_semantic "$@" ;;
-        *) echo "Usage: $0 {init|migrate|sync|status|query|write|embed|semantic}" >&2; exit 1 ;;
+        consolidate) cmd_consolidate "$@" ;;
+        prune) cmd_prune "$@" ;;
+        render) cmd_render "$@" ;;
+        *) echo "Usage: $0 {init|migrate|sync|status|query|write|embed|semantic|consolidate|prune|render}" >&2; exit 1 ;;
     esac
 }
 

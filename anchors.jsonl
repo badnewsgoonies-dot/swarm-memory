@@ -171,3 +171,5 @@
 ["f", "glyph-syntax", "3 glyph syntax options compared", null, null, "2025-12-01T05:58:04Z", null, null]
 ["f", "glyph-syntax", "Glyph syntax best practices", null, null, "2025-12-01T05:58:06Z", null, null]
 ["f", "glyph-syntax", "Ready-made glyph spec", null, null, "2025-12-01T05:58:08Z", null, null]
+["a", "implementation", "Phase 1 complete: Glyph format optimization. Added render command, updated head-with-memory.sh to use glyphs, tested with Claude.", "done", null, "2025-12-01T06:15:23Z", null, null]
+["a", "implementation", "Phase 2 complete: Memory consolidation. Added consolidate command (LLM-based ADD/UPDATE/DELETE/NOOP), prune command, status/superseded columns.", "done", null, "2025-12-01T06:29:58Z", null, null]

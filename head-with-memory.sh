@@ -76,68 +76,48 @@ if [[ -z "$QUERY" ]]; then
     exit 1
 fi
 
-# Build memory context
+# Build memory context using compact glyph format
 build_memory_context() {
-    local mem_search="$MEMORY_DIR/mem-search.sh"
+    local mem_db="$MEMORY_DIR/mem-db.sh"
 
-    if [[ ! -x "$mem_search" ]]; then
-        echo "# (memory search not available)" >&2
+    if [[ ! -x "$mem_db" ]]; then
+        echo "# (memory not available)" >&2
         return
     fi
 
-    # Get recent decisions
+    local output=""
+
+    # Get recent decisions (glyphs)
     local decisions
-    decisions=$($mem_search t=d limit=5 --json 2>/dev/null || true)
+    decisions=$($mem_db render t=d limit=5 2>/dev/null || true)
     if [[ -n "$decisions" ]]; then
-        echo "## Recent Decisions"
-        while IFS= read -r line; do
-            local topic text choice
-            topic=$(echo "$line" | jq -r '.[1]')
-            text=$(echo "$line" | jq -r '.[2]')
-            choice=$(echo "$line" | jq -r '.[3] // empty')
-            if [[ -n "$choice" ]]; then
-                echo "- **$topic**: $text → *$choice*"
-            else
-                echo "- **$topic**: $text"
-            fi
-        done <<< "$decisions"
-        echo
+        output+="$decisions"$'\n'
     fi
 
-    # Get open questions
+    # Get open questions (glyphs)
     local questions
-    questions=$($mem_search t=q limit=3 --json 2>/dev/null || true)
+    questions=$($mem_db render t=q limit=3 2>/dev/null || true)
     if [[ -n "$questions" ]]; then
-        echo "## Open Questions"
-        while IFS= read -r line; do
-            local topic text
-            topic=$(echo "$line" | jq -r '.[1]')
-            text=$(echo "$line" | jq -r '.[2]')
-            echo "- **$topic**: $text"
-        done <<< "$questions"
-        echo
+        output+="$questions"$'\n'
     fi
 
     # Custom filters if provided
     if [[ -n "$FILTERS" ]]; then
         local custom
         # shellcheck disable=SC2086
-        custom=$($mem_search $FILTERS limit="$LIMIT" --json 2>/dev/null || true)
+        custom=$($mem_db render $FILTERS limit="$LIMIT" 2>/dev/null || true)
         if [[ -n "$custom" ]]; then
-            echo "## Relevant Context"
-            while IFS= read -r line; do
-                local t topic text
-                t=$(echo "$line" | jq -r '.[0]')
-                topic=$(echo "$line" | jq -r '.[1]')
-                text=$(echo "$line" | jq -r '.[2]')
-                echo "- [$t] **$topic**: $text"
-            done <<< "$custom"
-            echo
+            output+="$custom"$'\n'
         fi
+    fi
+
+    # Output if we have content
+    if [[ -n "$output" ]]; then
+        echo "$output"
     fi
 }
 
-# Build full prompt
+# Build full prompt with glyph format and examples
 build_prompt() {
     local memory_block=""
 
@@ -146,9 +126,14 @@ build_prompt() {
     fi
 
     if [[ -n "$memory_block" ]]; then
+        cat <<'GLYPH_HEADER'
+# Memory Glyphs
+Format: [TYPE][topic=X][ts=DATE][choice=Y] content
+Types: D=decision, Q=question, F=fact, A=action, N=note
+
+GLYPH_HEADER
+        echo "$memory_block"
         cat <<EOF
-# Memory Context
-$memory_block
 ---
 
 $QUERY
