@@ -1,3 +1,6 @@
 memory.db
 __pycache__/
 .venv/
+daemon.log
+daemon_state.json
+daemon.kill
