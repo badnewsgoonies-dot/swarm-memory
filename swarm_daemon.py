@@ -468,6 +468,7 @@ def execute_action(action_data, repo_root: Path, unrestricted: bool):
         path_str = action_data.get("path", "")
         content = action_data.get("content", "")
         mode = action_data.get("mode", "replace")
+        reason = action_data.get("reason", "")  # Optional: why the edit was made
         target = (repo_root / path_str).resolve()
         if not unrestricted and not is_within_repo(target, repo_root):
             return {"success": False, "error": "Path outside repo root"}
@@ -479,7 +480,12 @@ def execute_action(action_data, repo_root: Path, unrestricted: bool):
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(content, encoding="utf-8")
-            return {"success": True, "output": f"Wrote {target}"}
+            # Auto-record edit to memory
+            edit_summary = f"Edited {path_str} ({mode})"
+            if reason:
+                edit_summary += f": {reason}"
+            call_mem_db("write", "t=a", "topic=daemon-edit", f"text={edit_summary[:200]}")
+            return {"success": True, "output": f"Wrote {target}", "recorded": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -583,7 +589,7 @@ AVAILABLE ACTIONS (one JSON object):
 - {{"action": "git_status"}}
 - {{"action": "check_deps", "manager": "pnpm"}}  # returns status: ok|missing|stale|outdated
 - {{"action": "run", "cmd": "npm test"}}  # safe commands only unless unrestricted
-- {{"action": "edit_file", "path": "file", "content": "...", "mode": "replace|append"}}  # unrestricted only
+- {{"action": "edit_file", "path": "file", "content": "...", "mode": "replace|append", "reason": "why"}}  # auto-records to memory
 - {{"action": "exec", "cmd": "cd src && ls -la", "cwd": "/path/to/dir"}}  # unrestricted, shell=True
 - {{"action": "http_request", "method": "GET", "url": "https://..."}}
 - {{"action": "sleep", "seconds": 5}}
@@ -604,6 +610,8 @@ AVAILABLE ACTIONS (one JSON object):
     prompt += """TIPS:
 - Use check_deps before running install to avoid unnecessary reinstalls
 - Use CI=true for pnpm/npm in non-interactive environments
+- After reading substantial new info, use write_memory to record key facts (type=f)
+- edit_file auto-records to memory; include "reason" for better context
 
 Decide your next action. Output ONLY valid JSON for one action.
 If the objective is complete, use the "done" action.
