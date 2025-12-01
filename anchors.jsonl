@@ -138,3 +138,7 @@
 ["d", "recommendations", "3 risks to mitigate", "Watch carefully", "1) Pipeline complexity/latency - monitor hops per query 2) Glyph language needs prompt examples or LLM ignores it 3) Over-summarization loses info - never summarize a summary, keep raw for fresh summaries", "2025-12-01T05:17:05Z", null, null]
 ["f", "novelty", "3 novel aspects to focus on", null, null, "2025-12-01T05:17:06Z", null, null]
 ["f", "implementation", "Anchor glyph format recommendation", null, null, "2025-12-01T05:17:08Z", null, null]
+["f", "architecture", "Multi-chat memory sharing is trivial with external memory", null, null, "2025-12-01T05:19:24Z", null, null]
+["f", "architecture", "Working buffer: shared vs private glyphs", null, null, "2025-12-01T05:19:24Z", null, null]
+["f", "architecture", "Multi-chat role specialization", null, null, "2025-12-01T05:19:25Z", null, null]
+["f", "architecture", "Transaction safety for multi-chat", null, null, "2025-12-01T05:19:27Z", null, null]
