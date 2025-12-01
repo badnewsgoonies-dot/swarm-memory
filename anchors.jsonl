@@ -41,3 +41,8 @@
 ["d", "embeddings", "Use OpenAI API only for embeddings, no local ML deps", "api-only", "User has no GPU, ChatGPT Pro != API access", "2025-11-30T23:58:20Z", "phase4-5", null]
 ["d", "retrieval", "Hybrid scoring formula: score = \u03b1\u00b7sim + \u03b2\u00b7exp(-\u0394t/\u03c4)", "\u03b1=1.0, \u03b2=0.3, \u03c4=7", "Balances relevance with recency", "2025-11-30T23:58:25Z", "phase4-5", null]
 ["d", "workflow", "Claude actively uses memory during conversations - queries context, records decisions", "active-memory", null, "2025-11-30T23:59:23Z", "phase4-5", null]
+["a", "git", "Pushed Phase 4-5 to github.com/badnewsgoonies-dot/swarm-memory", null, null, "2025-12-01T00:00:36Z", "phase4-5", null]
+["f", "memory", "Cross-chat memory sharing verified working - new chat successfully queried decisions from this session", null, null, "2025-12-01T00:31:11Z", "phase4-5", null]
+["f", "memory", "Chats default to reading anchors.jsonl directly instead of using CLI queries - need stronger CLAUDE.md instructions", null, null, "2025-12-01T00:35:47Z", "phase4-5", null]
+["f", "memory", "CLAUDE.md instructions successfully guide chats to use CLI queries instead of reading raw JSONL", null, null, "2025-12-01T00:43:32Z", "phase4-5", null]
+["d", "embeddings", "Use local embeddings with all-MiniLM-L6-v2, no API key required", "local-model", "Works on CPU, free, 384 dimensions", "2025-12-01T02:05:52Z", "phase4-5", null]

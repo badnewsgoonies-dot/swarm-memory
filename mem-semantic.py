@@ -30,7 +30,17 @@ from pathlib import Path
 # Import temporal decay from sibling module
 from temporal_decay import temporal_decay_score
 
-MODEL_NAME = "text-embedding-3-large"
+# Model configs (must match mem-embed.py)
+MODELS = {
+    'local': {
+        'name': 'all-MiniLM-L6-v2',
+        'dim': 384
+    },
+    'api': {
+        'name': 'text-embedding-3-large',
+        'dim': 3072
+    }
+}
 
 
 def get_script_dir():
@@ -82,6 +92,12 @@ def parse_args():
         dest='json_output',
         help='Output as JSON lines'
     )
+    parser.add_argument(
+        '--backend',
+        choices=['local', 'api'],
+        default='local',
+        help='Embedding backend: local (default) or api'
+    )
     return parser.parse_args()
 
 
@@ -101,28 +117,35 @@ def cosine_similarity(a: list, b: list) -> float:
     return dot / (norm_a * norm_b)
 
 
-def get_query_embedding(query: str) -> list:
-    """Get embedding for query text via OpenAI API."""
-    try:
-        from openai import OpenAI
-    except ImportError:
-        print("ERROR: openai package not installed.", file=sys.stderr)
-        print("Run: pip install openai>=1.0.0", file=sys.stderr)
-        sys.exit(1)
-
-    api_key = os.environ.get('OPENAI_API_KEY')
-    if not api_key:
-        print("ERROR: OPENAI_API_KEY environment variable not set.", file=sys.stderr)
-        sys.exit(1)
-
-    client = OpenAI(api_key=api_key)
-
-    response = client.embeddings.create(
-        model=MODEL_NAME,
-        input=[query]
-    )
-
-    return response.data[0].embedding
+def get_query_embedding(query: str, backend: str = 'local') -> list:
+    """Get embedding for query text."""
+    if backend == 'local':
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError:
+            print("ERROR: sentence-transformers not installed.", file=sys.stderr)
+            print("Run: pip install sentence-transformers", file=sys.stderr)
+            sys.exit(1)
+        model = SentenceTransformer(MODELS['local']['name'])
+        embedding = model.encode([query])[0]
+        return embedding.tolist()
+    else:
+        try:
+            from openai import OpenAI
+        except ImportError:
+            print("ERROR: openai package not installed.", file=sys.stderr)
+            print("Run: pip install openai>=1.0.0", file=sys.stderr)
+            sys.exit(1)
+        api_key = os.environ.get('OPENAI_API_KEY')
+        if not api_key:
+            print("ERROR: OPENAI_API_KEY environment variable not set.", file=sys.stderr)
+            sys.exit(1)
+        client = OpenAI(api_key=api_key)
+        response = client.embeddings.create(
+            model=MODELS['api']['name'],
+            input=[query]
+        )
+        return response.data[0].embedding
 
 
 def parse_timestamp(ts_str: str) -> datetime:
@@ -246,7 +269,7 @@ def main():
 
     # Get query embedding
     try:
-        query_embedding = get_query_embedding(args.query)
+        query_embedding = get_query_embedding(args.query, args.backend)
     except Exception as e:
         print(f"ERROR: Failed to embed query: {e}", file=sys.stderr)
         print("Hint: Try keyword search with './mem-db.sh query text=...'", file=sys.stderr)
