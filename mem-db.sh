@@ -199,6 +199,19 @@ cursor.execute("CREATE INDEX IF NOT EXISTS idx_scope ON chunks(scope)")
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_id ON chunks(chat_id)")
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_visibility ON chunks(visibility)")
 
+# Create topic_index table for hierarchical retrieval
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS topic_index (
+    topic TEXT PRIMARY KEY,
+    embedding BLOB,
+    embedding_model TEXT,
+    embedding_dim INTEGER,
+    chunk_count INTEGER DEFAULT 0,
+    updated_at TEXT
+)
+""")
+print("Created topic_index table (if not exists)")
+
 if added_columns:
     print(f"Created indexes: idx_scope, idx_chat_id, idx_visibility")
 else:
@@ -676,6 +689,103 @@ cmd_semantic() {
     $PYTHON_BIN "$semantic_script" --db "$DB_FILE" "$@"
 }
 
+cmd_topic_index() {
+    # Build/update topic index with aggregated embeddings
+    if [[ ! -f "$DB_FILE" ]]; then
+        echo "Database not found: $DB_FILE" >&2
+        exit 1
+    fi
+
+    $PYTHON_BIN - "$DB_FILE" "$@" <<'PYEOF'
+import sys
+import sqlite3
+import struct
+from datetime import datetime
+
+db_path = sys.argv[1]
+dry_run = "--dry-run" in sys.argv
+
+conn = sqlite3.connect(db_path)
+cursor = conn.cursor()
+
+# Get all topics with embeddings
+cursor.execute("""
+    SELECT anchor_topic, embedding, embedding_model, embedding_dim
+    FROM chunks
+    WHERE embedding IS NOT NULL AND anchor_topic IS NOT NULL
+      AND (status IS NULL OR status = 'active')
+""")
+rows = cursor.fetchall()
+
+if not rows:
+    print("No embedded chunks with topics found.")
+    sys.exit(0)
+
+# Group embeddings by topic
+topic_embeddings = {}
+for topic, blob, model, dim in rows:
+    if topic not in topic_embeddings:
+        topic_embeddings[topic] = {'embeddings': [], 'model': model, 'dim': dim}
+    emb = list(struct.unpack(f'{dim}f', blob))
+    topic_embeddings[topic]['embeddings'].append(emb)
+
+print(f"Found {len(topic_embeddings)} topics to index")
+
+# Compute mean embedding for each topic
+try:
+    from datetime import UTC
+    now = datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ')
+except ImportError:
+    now = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+
+indexed = 0
+for topic, data in topic_embeddings.items():
+    embeddings = data['embeddings']
+    dim = data['dim']
+    model = data['model']
+    count = len(embeddings)
+
+    # Compute mean embedding
+    mean_emb = [0.0] * dim
+    for emb in embeddings:
+        for i, v in enumerate(emb):
+            mean_emb[i] += v
+    mean_emb = [v / count for v in mean_emb]
+
+    # Normalize
+    norm = sum(v * v for v in mean_emb) ** 0.5
+    if norm > 0:
+        mean_emb = [v / norm for v in mean_emb]
+
+    # Pack to blob
+    blob = struct.pack(f'{dim}f', *mean_emb)
+
+    if dry_run:
+        print(f"  Would index: {topic} ({count} chunks)")
+    else:
+        cursor.execute("""
+            INSERT INTO topic_index (topic, embedding, embedding_model, embedding_dim, chunk_count, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(topic) DO UPDATE SET
+                embedding = excluded.embedding,
+                embedding_model = excluded.embedding_model,
+                embedding_dim = excluded.embedding_dim,
+                chunk_count = excluded.chunk_count,
+                updated_at = excluded.updated_at
+        """, (topic, blob, model, dim, count, now))
+        print(f"  Indexed: {topic} ({count} chunks)")
+    indexed += 1
+
+if not dry_run:
+    conn.commit()
+    print(f"\nIndexed {indexed} topics")
+else:
+    print(f"\n(dry-run: would index {indexed} topics)")
+
+conn.close()
+PYEOF
+}
+
 cmd_consolidate() {
     local consolidate_script="$SCRIPT_DIR/mem-consolidate.py"
     if [[ ! -x "$consolidate_script" ]]; then
@@ -908,10 +1018,11 @@ main() {
         write) cmd_write "$@" ;;
         embed) cmd_embed "$@" ;;
         semantic) cmd_semantic "$@" ;;
+        topic-index) cmd_topic_index "$@" ;;
         consolidate) cmd_consolidate "$@" ;;
         prune) cmd_prune "$@" ;;
         render) cmd_render "$@" ;;
-        *) echo "Usage: $0 {init|migrate|sync|status|query|write|embed|semantic|consolidate|prune|render}" >&2; exit 1 ;;
+        *) echo "Usage: $0 {init|migrate|sync|status|query|write|embed|semantic|topic-index|consolidate|prune|render}" >&2; exit 1 ;;
     esac
 }
 

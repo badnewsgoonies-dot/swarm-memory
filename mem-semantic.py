@@ -12,6 +12,8 @@ Usage:
     ./mem-semantic.py "query" --beta 0.3         # Decay weight
     ./mem-semantic.py "query" --tau 7            # Decay time constant (days)
     ./mem-semantic.py "query" --json             # JSON output
+    ./mem-semantic.py "query" --hierarchical     # Two-stage: topics first, then chunks
+    ./mem-semantic.py "query" --hierarchical --top-topics 3  # Search top 3 topics
 
 Requires:
     OPENAI_API_KEY environment variable
@@ -98,6 +100,17 @@ def parse_args():
         default='local',
         help='Embedding backend: local (default) or api'
     )
+    parser.add_argument(
+        '--hierarchical',
+        action='store_true',
+        help='Use hierarchical search: match topics first, then chunks'
+    )
+    parser.add_argument(
+        '--top-topics',
+        type=int,
+        default=5,
+        help='Number of topics to search in hierarchical mode (default: 5)'
+    )
     return parser.parse_args()
 
 
@@ -162,20 +175,59 @@ def parse_timestamp(ts_str: str) -> datetime:
         return datetime.now(timezone.utc)
 
 
-def get_embedded_chunks(conn):
-    """Get all chunks with embeddings."""
+def get_embedded_chunks(conn, topics=None):
+    """Get all chunks with embeddings, optionally filtered by topics."""
+    cursor = conn.cursor()
+    if topics:
+        placeholders = ','.join('?' * len(topics))
+        cursor.execute(f"""
+            SELECT
+                id, embedding, timestamp,
+                anchor_type, anchor_topic, text,
+                anchor_choice, anchor_rationale,
+                anchor_session, anchor_source,
+                scope, chat_id, agent_role, visibility, project_id
+            FROM chunks
+            WHERE embedding IS NOT NULL
+              AND anchor_topic IN ({placeholders})
+              AND (status IS NULL OR status = 'active')
+        """, topics)
+    else:
+        cursor.execute("""
+            SELECT
+                id, embedding, timestamp,
+                anchor_type, anchor_topic, text,
+                anchor_choice, anchor_rationale,
+                anchor_session, anchor_source,
+                scope, chat_id, agent_role, visibility, project_id
+            FROM chunks
+            WHERE embedding IS NOT NULL
+              AND (status IS NULL OR status = 'active')
+        """)
+    return cursor.fetchall()
+
+
+def get_topic_index(conn):
+    """Get all topic embeddings from topic_index table."""
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT
-            id, embedding, timestamp,
-            anchor_type, anchor_topic, text,
-            anchor_choice, anchor_rationale,
-            anchor_session, anchor_source,
-            scope, chat_id, agent_role, visibility, project_id
-        FROM chunks
+        SELECT topic, embedding, embedding_dim
+        FROM topic_index
         WHERE embedding IS NOT NULL
     """)
     return cursor.fetchall()
+
+
+def find_top_topics(query_embedding, topic_index, top_k=5):
+    """Find top-k topics by similarity to query."""
+    scored_topics = []
+    for topic, blob, dim in topic_index:
+        topic_emb = unpack_embedding(blob)
+        sim = cosine_similarity(query_embedding, topic_emb)
+        scored_topics.append((sim, topic))
+
+    scored_topics.sort(reverse=True)
+    return [topic for sim, topic in scored_topics[:top_k]]
 
 
 def format_result_human(rank: int, score: float, row: tuple):
@@ -258,21 +310,33 @@ def main():
 
     conn = sqlite3.connect(args.db)
 
-    # Get embedded chunks
-    chunks = get_embedded_chunks(conn)
-    conn.close()
-
-    if not chunks:
-        print("ERROR: No chunks with embeddings found.", file=sys.stderr)
-        print("Run './mem-db.sh embed' to generate embeddings first.", file=sys.stderr)
-        sys.exit(1)
-
     # Get query embedding
     try:
         query_embedding = get_query_embedding(args.query, args.backend)
     except Exception as e:
         print(f"ERROR: Failed to embed query: {e}", file=sys.stderr)
         print("Hint: Try keyword search with './mem-db.sh query text=...'", file=sys.stderr)
+        sys.exit(1)
+
+    # Hierarchical search: first match topics, then search within
+    topics_filter = None
+    if args.hierarchical:
+        topic_index = get_topic_index(conn)
+        if topic_index:
+            topics_filter = find_top_topics(query_embedding, topic_index, args.top_topics)
+            if not args.json_output:
+                print(f"\033[90mSearching in topics: {', '.join(topics_filter)}\033[0m\n")
+        else:
+            if not args.json_output:
+                print("\033[90mNo topic index found, falling back to flat search\033[0m\n")
+
+    # Get embedded chunks (filtered by topics if hierarchical)
+    chunks = get_embedded_chunks(conn, topics_filter)
+    conn.close()
+
+    if not chunks:
+        print("ERROR: No chunks with embeddings found.", file=sys.stderr)
+        print("Run './mem-db.sh embed' to generate embeddings first.", file=sys.stderr)
         sys.exit(1)
 
     # Score all chunks

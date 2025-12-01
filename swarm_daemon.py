@@ -127,9 +127,12 @@ def clear_kill_switch():
         KILL_FILE.unlink()
 
 
-def call_llm(prompt):
+def call_llm(prompt, verbose=False):
     """Call Claude CLI with prompt"""
-    logger.debug(f"LLM prompt: {prompt[:200]}...")
+    if verbose:
+        logger.info(f"LLM prompt ({len(prompt)} chars):\n{prompt[:500]}...")
+    else:
+        logger.debug(f"LLM prompt: {prompt[:200]}...")
     try:
         result = subprocess.run(
             ['claude', '-p', prompt],
@@ -138,7 +141,10 @@ def call_llm(prompt):
             timeout=120
         )
         response = result.stdout.strip()
-        logger.debug(f"LLM response: {response[:200]}...")
+        if verbose:
+            logger.info(f"LLM response ({len(response)} chars):\n{response[:500]}...")
+        else:
+            logger.debug(f"LLM response: {response[:200]}...")
         return response
     except subprocess.TimeoutExpired:
         logger.error("LLM call timed out")
@@ -293,7 +299,7 @@ Your action:"""
     return prompt
 
 
-def run_daemon(state):
+def run_daemon(state, verbose=False):
     """Main daemon loop"""
     logger.info(f"Starting daemon with objective: {state.objective}")
     state.status = "running"
@@ -322,7 +328,7 @@ def run_daemon(state):
         prompt = build_prompt(state, last_results)
         logger.info(f"Iteration {state.iteration}: calling LLM")
 
-        response = call_llm(prompt)
+        response = call_llm(prompt, verbose=verbose)
         if not response:
             logger.error("No response from LLM")
             state.status = "error"
@@ -387,6 +393,7 @@ def main():
     parser.add_argument('--max-iterations', type=int, default=100, help='Max iterations')
     parser.add_argument('--clear-kill', action='store_true', help='Clear kill switch')
     parser.add_argument('--status', action='store_true', help='Show daemon status')
+    parser.add_argument('--verbose', '-v', action='store_true', help='Log full prompts/responses at INFO level')
     args = parser.parse_args()
 
     if args.clear_kill:
@@ -430,7 +437,7 @@ def main():
     MAX_ITERATIONS_PER_HOUR = args.max_iterations
 
     try:
-        run_daemon(state)
+        run_daemon(state, verbose=args.verbose)
     except KeyboardInterrupt:
         logger.info("Daemon interrupted by user")
         state.status = "interrupted"

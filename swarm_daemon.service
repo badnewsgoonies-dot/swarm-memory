@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-User=%i
+User=geni
 WorkingDirectory=/home/geni/swarm/memory
 ExecStart=/usr/bin/python3 /home/geni/swarm/memory/swarm_daemon.py --resume
 Restart=on-failure
