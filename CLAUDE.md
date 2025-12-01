@@ -2,8 +2,13 @@
 
 This folder has a shared memory database. Use it to maintain context across chats.
 
-**IMPORTANT: Use the CLI commands below. Do NOT read anchors.jsonl directly.**
-The JSONL file won't fit in context as memory grows. The CLI filters and limits results.
+**IMPORTANT: Query memory FIRST before exploring code or using agents.**
+The answer is probably already stored. Only explore code if memory doesn't have it.
+
+**Do NOT:**
+- Read anchors.jsonl directly (won't scale)
+- Launch Explore agents for questions about this project
+- Read source files to answer questions about decisions/setup
 
 ## Query before answering
 ```bash
