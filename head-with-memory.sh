@@ -11,12 +11,20 @@
 #   --filters "..."   Custom mem-search filters (default: recent decisions + open questions)
 #   --limit N         Max memory entries to inject (default: 10)
 #   --model MODEL     LLM to use: claude (default), codex
+#   --role ROLE       Agent role: architect, coder, reviewer, pm (affects prompt + memory scope)
+#   --chat-id ID      Chat identifier for scoped memory
 #   --dry-run         Show prompt without executing
 #   --no-memory       Skip memory injection (pass-through)
 #
 # Environment:
 #   MEMORY_DIR        Override memory directory (default: script dir)
 #   MEM_FILTERS       Default filters if --filters not specified
+#
+# Roles:
+#   architect  - System design, architecture decisions, high-level planning
+#   coder      - Implementation, code writing, debugging
+#   reviewer   - Code review, quality assurance, testing
+#   pm         - Project management, requirements, coordination
 #
 
 set -euo pipefail
@@ -28,6 +36,8 @@ MEMORY_DIR="${MEMORY_DIR:-$SCRIPT_DIR}"
 FILTERS="${MEM_FILTERS:-}"
 LIMIT=10
 MODEL="claude"
+ROLE=""
+CHAT_ID=""
 DRY_RUN=0
 NO_MEMORY=0
 QUERY=""
@@ -45,6 +55,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --model)
             MODEL="$2"
+            shift 2
+            ;;
+        --role)
+            ROLE="$2"
+            shift 2
+            ;;
+        --chat-id)
+            CHAT_ID="$2"
             shift 2
             ;;
         --dry-run)
@@ -76,7 +94,62 @@ if [[ -z "$QUERY" ]]; then
     exit 1
 fi
 
+# Role-specific system prompts
+get_role_prompt() {
+    local role="$1"
+    case "$role" in
+        architect)
+            cat <<'ROLE_PROMPT'
+You are a software architect. Focus on:
+- System design and high-level architecture
+- Technology choices and trade-offs
+- Scalability, maintainability, security patterns
+- Interface definitions and module boundaries
+Record architectural decisions as type=d (decisions).
+ROLE_PROMPT
+            ;;
+        coder)
+            cat <<'ROLE_PROMPT'
+You are a software developer. Focus on:
+- Implementation details and code quality
+- Debugging and problem-solving
+- Following established patterns and conventions
+- Writing clean, testable code
+Record implementation notes as type=f (facts) or type=n (notes).
+ROLE_PROMPT
+            ;;
+        reviewer)
+            cat <<'ROLE_PROMPT'
+You are a code reviewer. Focus on:
+- Code quality, correctness, and best practices
+- Security vulnerabilities and edge cases
+- Performance implications
+- Test coverage and documentation
+Record review findings as type=f (facts) or type=q (questions).
+ROLE_PROMPT
+            ;;
+        pm)
+            cat <<'ROLE_PROMPT'
+You are a project manager. Focus on:
+- Requirements gathering and clarification
+- Task breakdown and prioritization
+- Coordination between team members
+- Progress tracking and blockers
+Record requirements and tasks as type=a (actions) or type=q (questions).
+ROLE_PROMPT
+            ;;
+        *)
+            # No role-specific prompt
+            return
+            ;;
+    esac
+}
+
 # Build memory context using compact glyph format
+# Scoping rules:
+#   1. Shared + public: visible to all roles/chats
+#   2. Chat-scoped: only visible within same chat_id
+#   3. Role entries: only public ones from same role (not private/internal from other chats)
 build_memory_context() {
     local mem_db="$MEMORY_DIR/mem-db.sh"
 
@@ -87,21 +160,47 @@ build_memory_context() {
 
     local output=""
 
-    # Get recent decisions (glyphs)
-    local decisions
-    decisions=$($mem_db render t=d limit=5 2>/dev/null || true)
-    if [[ -n "$decisions" ]]; then
-        output+="$decisions"$'\n'
+    # 1. Shared scope, public visibility (universal access)
+    local shared_decisions
+    shared_decisions=$($mem_db render t=d scope=shared visibility=public limit=5 2>/dev/null || true)
+    if [[ -n "$shared_decisions" ]]; then
+        output+="$shared_decisions"$'\n'
     fi
 
-    # Get open questions (glyphs)
-    local questions
-    questions=$($mem_db render t=q limit=3 2>/dev/null || true)
-    if [[ -n "$questions" ]]; then
-        output+="$questions"$'\n'
+    local shared_questions
+    shared_questions=$($mem_db render t=q scope=shared visibility=public limit=3 2>/dev/null || true)
+    if [[ -n "$shared_questions" ]]; then
+        output+="$shared_questions"$'\n'
     fi
 
-    # Custom filters if provided
+    # 2. Chat-scoped entries (if chat_id provided)
+    if [[ -n "$CHAT_ID" ]]; then
+        local chat_entries
+        chat_entries=$($mem_db render scope=chat chat_id="$CHAT_ID" limit=5 2>/dev/null || true)
+        if [[ -n "$chat_entries" ]]; then
+            output+="$chat_entries"$'\n'
+        fi
+    fi
+
+    # 3. Role-specific: only public entries from same role
+    if [[ -n "$ROLE" ]]; then
+        local role_entries
+        role_entries=$($mem_db render role="$ROLE" visibility=public limit=5 2>/dev/null || true)
+        if [[ -n "$role_entries" ]]; then
+            output+="$role_entries"$'\n'
+        fi
+
+        # Also get internal entries for this role IF we have a chat_id (same session)
+        if [[ -n "$CHAT_ID" ]]; then
+            local role_internal
+            role_internal=$($mem_db render role="$ROLE" visibility=internal chat_id="$CHAT_ID" limit=3 2>/dev/null || true)
+            if [[ -n "$role_internal" ]]; then
+                output+="$role_internal"$'\n'
+            fi
+        fi
+    fi
+
+    # Custom filters if provided (user responsibility for scoping)
     if [[ -n "$FILTERS" ]]; then
         local custom
         # shellcheck disable=SC2086
@@ -120,9 +219,21 @@ build_memory_context() {
 # Build full prompt with glyph format and examples
 build_prompt() {
     local memory_block=""
+    local role_prompt=""
 
     if [[ "$NO_MEMORY" -eq 0 ]]; then
         memory_block=$(build_memory_context)
+    fi
+
+    if [[ -n "$ROLE" ]]; then
+        role_prompt=$(get_role_prompt "$ROLE")
+    fi
+
+    # Start with role prompt if set
+    if [[ -n "$role_prompt" ]]; then
+        echo "# Role: ${ROLE^^}"
+        echo "$role_prompt"
+        echo
     fi
 
     if [[ -n "$memory_block" ]]; then

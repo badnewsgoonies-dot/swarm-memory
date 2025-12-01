@@ -209,5 +209,83 @@ The current repo already provides:
 - An incremental sync layer (`mem-sync.py`).
 - A query interface (`mem-db.sh`, `mem-search.sh --db`).
 
-So this is not “good only on paper.” It is a **small, concrete extension** away from a fully practical multi‑chat, multi‑agent memory OS that multiple chats (and tools like Claude, etc.) can safely share.
+So this is not "good only on paper." It is a **small, concrete extension** away from a fully practical multi‑chat, multi‑agent memory OS that multiple chats (and tools like Claude, etc.) can safely share.
+
+---
+
+## 8. Implemented Role System (Phase 5)
+
+The role system is now implemented in `head-with-memory.sh`.
+
+### 8.1. Available Roles
+
+| Role | Focus | Default Write Type |
+|------|-------|-------------------|
+| `architect` | System design, architecture decisions | `d` (decisions) |
+| `coder` | Implementation, debugging, code quality | `f`/`n` (facts/notes) |
+| `reviewer` | Code review, QA, testing | `f`/`q` (facts/questions) |
+| `pm` | Requirements, coordination, tracking | `a`/`q` (actions/questions) |
+
+### 8.2. Usage
+
+```bash
+# Architect mode with chat isolation
+./head-with-memory.sh --role architect --chat-id session123 "Design the auth system"
+
+# Coder mode
+./head-with-memory.sh --role coder "Implement the login endpoint"
+
+# Write with role
+./mem-db.sh write t=f topic=auth text="JWT chosen over sessions" role=architect visibility=public
+./mem-db.sh write t=n topic=scratch text="WIP notes" role=coder visibility=internal chat_id=session123
+```
+
+### 8.3. Scoping Rules
+
+Memory injection follows strict isolation rules:
+
+1. **Shared + Public** (universal): `scope=shared visibility=public`
+   - All roles and chats see these entries
+   - Use for project-wide decisions, facts, requirements
+
+2. **Chat-scoped** (session isolation): `scope=chat chat_id=X`
+   - Only visible within the same chat session
+   - Use for working notes, WIP, scratch
+
+3. **Role + Public** (role sharing): `role=X visibility=public`
+   - All sessions with the same role see these
+   - Use for role-specific patterns, templates
+
+4. **Role + Internal + Chat** (private to session): `role=X visibility=internal chat_id=Y`
+   - Only visible to same role AND same chat session
+   - Use for role-specific working notes within a session
+
+### 8.4. What Each Role Sees
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Shared + Public                          │
+│         (decisions, facts, requirements)                    │
+│              Visible to ALL roles/chats                     │
+└─────────────────────────────────────────────────────────────┘
+         │
+         ├── Chat A (chat_id=A)
+         │   └── Chat-scoped entries for A only
+         │
+         ├── Chat B (chat_id=B)
+         │   └── Chat-scoped entries for B only
+         │
+         └── Role: architect
+             ├── Public architect entries (all architect sessions)
+             └── Internal architect + chat_id=X (only this session)
+```
+
+### 8.5. Preventing Data Leaks
+
+The `build_memory_context()` function enforces:
+
+- **No cross-chat leakage**: Chat-scoped entries require matching `chat_id`
+- **No cross-role private access**: Role internal entries require both matching role AND chat_id
+- **Public is explicit**: Only `visibility=public` entries are shared across sessions
+- **Custom filters are user responsibility**: `--filters` bypasses scoping (use carefully)
 
