@@ -195,6 +195,7 @@ def sync_anchors(db_path, source_path, dry_run=False):
     new_entries = []
     warnings = []
     current_line = 0
+    earliest_warning_line = None
 
     with open(source_path, 'r', encoding='utf-8') as f:
         for line in f:
@@ -209,6 +210,8 @@ def sync_anchors(db_path, source_path, dry_run=False):
 
             if error:
                 warnings.append(error)
+                if earliest_warning_line is None:
+                    earliest_warning_line = current_line
                 continue
 
             if chunk_data is None:
@@ -217,14 +220,21 @@ def sync_anchors(db_path, source_path, dry_run=False):
 
             new_entries.append((current_line, chunk_data))
 
+    # If we hit warnings, do not advance past the first warning; drop later entries
+    if earliest_warning_line is not None and new_entries:
+        new_entries = [entry for entry in new_entries if entry[0] < earliest_warning_line]
+
     # Insert new entries
     if new_entries and not dry_run:
         for line_num, chunk_data in new_entries:
             insert_chunk(conn, chunk_data)
         conn.commit()
 
-        # Update sync state
-        update_sync_state(conn, source_file_name, current_line)
+        # Update sync state to last successfully processed line (do not skip warnings)
+        last_success_line = new_entries[-1][0] if new_entries else last_synced_line
+        if earliest_warning_line is not None:
+            last_success_line = min(last_success_line, earliest_warning_line - 1)
+        update_sync_state(conn, source_file_name, last_success_line)
 
     conn.close()
 
