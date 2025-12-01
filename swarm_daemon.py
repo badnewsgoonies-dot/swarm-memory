@@ -35,6 +35,7 @@ import os
 import time
 import logging
 import shlex
+import hashlib
 from typing import List, Tuple
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -72,7 +73,8 @@ logger = logging.getLogger(__name__)
 class DaemonState:
     """Persistent state for daemon across restarts"""
 
-    def __init__(self):
+    def __init__(self, state_file=None):
+        self.state_file = Path(state_file) if state_file else STATE_FILE
         self.objective = ""
         self.iteration = 0
         self.iteration_times = []  # timestamps for rate limiting
@@ -100,14 +102,14 @@ class DaemonState:
             "llm_provider": self.llm_provider,
             "llm_model": self.llm_model
         }
-        STATE_FILE.write_text(json.dumps(data, indent=2))
+        self.state_file.write_text(json.dumps(data, indent=2))
 
     def load(self):
         """Load state from file"""
-        if not STATE_FILE.exists():
+        if not self.state_file.exists():
             return False
         try:
-            data = json.loads(STATE_FILE.read_text())
+            data = json.loads(self.state_file.read_text())
             self.objective = data.get("objective", "")
             self.iteration = data.get("iteration", 0)
             self.iteration_times = [
@@ -165,7 +167,7 @@ def call_llm(prompt, verbose=False, provider="claude", model=None):
         claude_model = model or os.environ.get("CLAUDE_MODEL")
         cmd = ['claude']
         if claude_model:
-            cmd.extend(['-m', claude_model])
+            cmd.extend(['--model', claude_model])
         cmd.extend(['-p', prompt])
 
     try:
@@ -175,7 +177,8 @@ def call_llm(prompt, verbose=False, provider="claude", model=None):
             text=True,
             timeout=120
         )
-        response = result.stdout.strip()
+        # Claude CLI may output to stderr in non-TTY mode
+        response = (result.stdout + result.stderr).strip()
         if verbose:
             logger.info(f"LLM response ({len(response)} chars):\n{response[:500]}...")
         else:
@@ -335,6 +338,122 @@ def execute_action(action_data, repo_root: Path, unrestricted: bool):
             return {"success": True, "output": text}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    if action == "spawn_daemon":
+        # Spawn a sub-daemon with a specific objective (fire and forget or blocking)
+        sub_objective = action_data.get("objective", "")
+        sub_repo = action_data.get("repo", str(repo_root))
+        max_iter = action_data.get("max_iterations", 10)
+        wait = action_data.get("wait", False)  # NEW: blocking mode
+        timeout = action_data.get("timeout", 300)  # NEW: max wait seconds
+
+        if not sub_objective:
+            return {"success": False, "error": "objective required"}
+
+        # Generate unique state file to avoid collision with parent daemon
+        import uuid
+        sub_state_id = uuid.uuid4().hex[:8]
+        sub_state_file = Path(sub_repo) / f"daemon_state_{sub_state_id}.json"
+
+        # subprocess already imported at module level (line 32)
+        script_path = Path(__file__).resolve()
+        cmd = [
+            "python3", str(script_path),
+            "--objective", sub_objective,
+            "--repo-root", sub_repo,
+            "--unrestricted",
+            "--max-iterations", str(max_iter),
+            "--state-file", str(sub_state_file)
+        ]
+        # Run in background
+        env = os.environ.copy()
+        env["HOME"] = str(Path.home() / "swarm/memory/.claude-tmp")
+        proc = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        call_mem_db("write", "t=a", "topic=daemon", f"text=Spawned sub-daemon PID {proc.pid}: {sub_objective[:100]}")
+
+        if wait:
+            # Blocking mode: poll for completion using sub-daemon's unique state file
+            state_file = sub_state_file
+            start_time = time.time()
+            logger.info(f"Waiting for sub-daemon PID {proc.pid} (timeout: {timeout}s)")
+
+            while time.time() - start_time < timeout:
+                if state_file.exists():
+                    try:
+                        with open(state_file) as f:
+                            sub_state = json.load(f)
+                        if sub_state.get("status") in ["done", "error", "stopped", "killed", "interrupted"]:
+                            # Sub-daemon completed
+                            sub_result = None
+                            if sub_state.get("history"):
+                                sub_result = sub_state["history"][-1]
+                            return {
+                                "success": True,
+                                "output": f"Sub-daemon completed: {sub_state.get('status')}",
+                                "pid": proc.pid,
+                                "sub_result": sub_result,
+                                "sub_status": sub_state.get("status"),
+                                "sub_history": sub_state.get("history", [])[-3:]  # Last 3 actions
+                            }
+                    except (json.JSONDecodeError, IOError):
+                        pass
+
+                # Check if process is still running
+                poll_result = proc.poll()
+                if poll_result is not None:
+                    # Process exited, check state file one last time
+                    if state_file.exists():
+                        try:
+                            with open(state_file) as f:
+                                sub_state = json.load(f)
+                            return {
+                                "success": True,
+                                "output": f"Sub-daemon exited with code {poll_result}",
+                                "pid": proc.pid,
+                                "sub_status": sub_state.get("status"),
+                                "sub_history": sub_state.get("history", [])[-3:]
+                            }
+                        except (json.JSONDecodeError, IOError, OSError):
+                            pass
+                    return {"success": False, "error": f"Sub-daemon exited unexpectedly (code {poll_result})", "pid": proc.pid}
+
+                time.sleep(5)  # Poll every 5 seconds
+
+            # Timeout reached
+            logger.warning(f"Sub-daemon PID {proc.pid} timeout after {timeout}s")
+            return {"success": False, "error": f"Sub-daemon timeout after {timeout}s", "pid": proc.pid, "timeout": True}
+
+        # Non-blocking (existing behavior)
+        return {"success": True, "output": f"Spawned sub-daemon PID {proc.pid}", "pid": proc.pid}
+
+    if action == "orch_status":
+        # Query orchestration status from memory glyphs
+        orch_id = action_data.get("orch_id", "")
+        if not orch_id:
+            return {"success": False, "error": "orch_id required"}
+
+        # Query memory for orchestration glyphs
+        result, ok = call_mem_db("query", f"topic=orch_{orch_id}", "t=a", "recent=1h", "limit=20", "--json")
+
+        if not ok or not result:
+            return {"success": True, "orch_id": orch_id, "phases": [], "latest": "unknown", "entry_count": 0}
+
+        # Parse to find latest phase
+        try:
+            entries = [json.loads(line) for line in result.strip().split('\n') if line.strip()]
+            phases = [e.get("anchor_choice", "") for e in entries if e.get("anchor_choice")]
+            latest_phase = phases[0] if phases else "unknown"
+            return {
+                "success": True,
+                "orch_id": orch_id,
+                "phases": phases,
+                "latest": latest_phase,
+                "entry_count": len(entries),
+                "entries": entries[:5]  # Include first 5 entries for context
+            }
+        except Exception as e:
+            logger.warning(f"Failed to parse orch_status entries: {e}")
+            return {"success": True, "orch_id": orch_id, "phases": [], "latest": "unknown", "entry_count": 0}
 
     if action == "list_files":
         rel = action_data.get("path", "")
@@ -525,31 +644,60 @@ def execute_action(action_data, repo_root: Path, unrestricted: bool):
 
 
 def parse_actions(response):
-    """Parse JSON actions from LLM response"""
+    """Parse JSON actions from LLM response - handles nested JSON and markdown blocks"""
     actions = []
-
-    # Try to find JSON in the response
-    # Look for {...} patterns
     import re
-    json_pattern = r'\{[^{}]*\}'
-    matches = re.findall(json_pattern, response, re.DOTALL)
 
-    for match in matches:
+    # 1. First try extracting from markdown code blocks
+    code_blocks = re.findall(r'```(?:json)?\s*(\{.+?\})\s*```', response, re.DOTALL)
+    for block in code_blocks:
         try:
-            action = json.loads(match)
+            action = json.loads(block)
             if "action" in action:
                 actions.append(action)
+                return actions  # Return first valid action
         except json.JSONDecodeError:
             continue
 
-    # If no valid JSON found, try to parse entire response
-    if not actions:
+    # 2. Find JSON by matching balanced braces
+    def find_json_objects(text):
+        objects = []
+        i = 0
+        while i < len(text):
+            if text[i] == '{':
+                depth = 1
+                start = i
+                i += 1
+                in_string = False
+                escape_next = False
+                while i < len(text) and depth > 0:
+                    c = text[i]
+                    if escape_next:
+                        escape_next = False
+                    elif c == '\\':
+                        escape_next = True
+                    elif c == '"' and not escape_next:
+                        in_string = not in_string
+                    elif not in_string:
+                        if c == '{':
+                            depth += 1
+                        elif c == '}':
+                            depth -= 1
+                    i += 1
+                if depth == 0:
+                    objects.append(text[start:i])
+            else:
+                i += 1
+        return objects
+
+    for obj_str in find_json_objects(response):
         try:
-            action = json.loads(response)
+            action = json.loads(obj_str)
             if "action" in action:
                 actions.append(action)
+                return actions  # Return first valid action
         except json.JSONDecodeError:
-            pass
+            continue
 
     return actions
 
@@ -563,37 +711,87 @@ def build_prompt(state, repo_root: Path, unrestricted: bool, last_results=None):
     mode = "UNRESTRICTED" if unrestricted else "REVIEWED (safe defaults)"
     llm = state.llm_provider.upper()
 
-    prompt = f"""You are an autonomous daemon working on an objective inside a repo.
+    # Check for orchestration mode
+    orch_context = ""
+    if state.objective.upper().startswith("ORCHESTRATE:"):
+        # Extract actual objective
+        actual_objective = state.objective[12:].strip()
 
-MODE: {mode}
-REPO: {repo_root}
-LLM: {llm}
-OBJECTIVE: {state.objective}
-ITERATION: {state.iteration}
+        # Validate non-empty objective
+        if not actual_objective:
+            logger.warning("Empty orchestration objective, treating as normal mode")
+        else:
+            orch_id = hashlib.md5(actual_objective.encode()).hexdigest()[:8]
 
-RECENT MEMORY:
+            # Query current orchestration state
+            orch_result, _ = call_mem_db("query", f"topic=orch_{orch_id}", "t=a", "recent=1h", "limit=10", "--json")
+
+            # Determine current phase from memory
+            # current_round counts number of audit failures (fix attempts)
+            current_phase = "implement"  # default
+            current_round = 1
+            try:
+                entries = [json.loads(l) for l in orch_result.strip().split('\n') if l.strip()]
+                for e in entries:
+                    choice = e.get("anchor_choice", "")
+                    if "audit:pass" in choice:
+                        current_phase = "done"
+                        break
+                    elif "audit:fail" in choice:
+                        current_phase = "fix"
+                        current_round += 1
+                    elif "fix_done" in choice:
+                        current_phase = "audit"
+                    elif "implement_done" in choice:
+                        current_phase = "audit"
+            except (json.JSONDecodeError, ValueError, KeyError):
+                pass
+
+            # Inject orchestration context (only if valid objective)
+            orch_context = f"""
+ORCHESTRATION MODE ACTIVE
+========================
+Orchestration ID: orch_{orch_id}
+Actual Objective: {actual_objective}
+Current Phase: {current_phase}
+Current Round: {current_round}
+Max Rounds: 5
+
+Recent Orchestration History:
+{orch_result[:2000] if orch_result else '(none)'}
+
+PHASE INSTRUCTIONS:
+- If phase is 'implement': Spawn implementation sub-daemon with wait=true
+- If phase is 'audit': Spawn audit sub-daemon with wait=true
+- If phase is 'fix': Spawn fix sub-daemon based on audit findings
+- If phase is 'done': Return done action with summary
+- If round > 5: Escalate to human
+
+Write a glyph after each phase transition using write_memory with topic=orch_{orch_id}
+
+"""
+
+    prompt = f"""OBJECTIVE: {state.objective}
+REPO: {repo_root} | MODE: {mode} | ITERATION: {state.iteration}
+
+{orch_context}
+MEMORY:
 {context_output}
 
-REPO CONTEXT:
+REPO:
 {repo_context}
 
-AVAILABLE ACTIONS (one JSON object):
-- {{"action": "write_memory", "type": "f|d|q|a|n", "topic": "...", "text": "..."}}
-- {{"action": "mem_search", "query": "t=d topic=...", "limit": 5}}
-- {{"action": "consolidate", "id": "recent|all|<number>"}}
-- {{"action": "read_file", "path": "src/index.ts", "max_bytes": 4000}}
-- {{"action": "list_files", "path": "src"}}
-- {{"action": "search_text", "query": "TODO", "path": "src"}}
-- {{"action": "git_log", "limit": 10}}
-- {{"action": "git_diff", "path": "src"}}
-- {{"action": "git_status"}}
-- {{"action": "check_deps", "manager": "pnpm"}}  # returns status: ok|missing|stale|outdated
-- {{"action": "run", "cmd": "npm test"}}  # safe commands only unless unrestricted
-- {{"action": "edit_file", "path": "file", "content": "...", "mode": "replace|append", "reason": "why"}}  # auto-records to memory
-- {{"action": "exec", "cmd": "cd src && ls -la", "cwd": "/path/to/dir"}}  # unrestricted, shell=True
-- {{"action": "http_request", "method": "GET", "url": "https://..."}}
-- {{"action": "sleep", "seconds": 5}}
-- {{"action": "done", "summary": "What was accomplished"}}
+ACTIONS:
+write_memory: {{"action":"write_memory","type":"f|d|q|a|n","topic":"...","text":"..."}}
+read_file: {{"action":"read_file","path":"file.ts","max_bytes":4000}}
+edit_file: {{"action":"edit_file","path":"file.ts","content":"...","reason":"why"}}
+list_files: {{"action":"list_files","path":"src"}}
+search_text: {{"action":"search_text","query":"TODO","path":"src"}}
+exec: {{"action":"exec","cmd":"pnpm install","cwd":"/path"}}
+spawn_daemon: {{"action":"spawn_daemon","objective":"Sub-task","repo":"/path","max_iterations":10,"wait":false,"timeout":300}}
+orch_status: {{"action":"orch_status","orch_id":"abc123"}}
+git_status/git_log/git_diff: {{"action":"git_status"}}
+done: {{"action":"done","summary":"What was accomplished"}}
 
 """
 
@@ -607,16 +805,21 @@ AVAILABLE ACTIONS (one JSON object):
             prompt += f"- {h.get('action', '?')}: {h.get('result', {}).get('output', '')[:100]}...\n"
         prompt += "\n"
 
-    prompt += """TIPS:
-- Use check_deps before running install to avoid unnecessary reinstalls
-- Use CI=true for pnpm/npm in non-interactive environments
-- After reading substantial new info, use write_memory to record key facts (type=f)
-- edit_file auto-records to memory; include "reason" for better context
+    # Detect action loops
+    if len(state.history) >= 3:
+        last_3 = [h.get('action') for h in state.history[-3:]]
+        if len(set(last_3)) == 1:
+            prompt += f"\n**WARNING: You repeated '{last_3[0]}' 3 times. CHANGE ACTION. If listing files, READ one. If reading, EDIT or WRITE.**\n\n"
 
-Decide your next action. Output ONLY valid JSON for one action.
-If the objective is complete, use the "done" action.
+    prompt += """RULES:
+- Output ONLY ONE JSON action. No explanation, no markdown, just JSON.
+- You have FULL ACCESS to all paths. NEVER ask for permissions.
+- After list_files: use read_file on interesting files.
+- After read_file: use edit_file to write new code.
+- Progress: list -> read -> edit -> done. Don't loop on same action.
+- UNRESTRICTED = full filesystem access granted.
 
-Your action:"""
+{"action":"...", ...}"""
 
     return prompt
 
@@ -767,6 +970,7 @@ def main():
     parser.add_argument('--unrestricted', action='store_true', help='Allow full action set (exec/edit/http); logs all actions')
     parser.add_argument('--llm', choices=['claude', 'codex'], default='claude', help='LLM provider (default: claude)')
     parser.add_argument('--llm-model', help='Override model for the chosen provider')
+    parser.add_argument('--state-file', help='Custom state file path (for sub-daemons)')
     args = parser.parse_args()
 
     if args.clear_kill:
@@ -774,7 +978,7 @@ def main():
         print("Kill switch cleared")
         return
 
-    state = DaemonState()
+    state = DaemonState(state_file=args.state_file)
 
     if args.status:
         if state.load():

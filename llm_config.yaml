@@ -1,0 +1,207 @@
+# LLM Router Configuration
+# Defines tiered architecture for hybrid local/API LLM system
+
+tiers:
+  # Tier 1: Fast local models for simple tasks
+  local_fast:
+    models:
+      - name: "phi3-mini"
+        provider: "ollama"
+        model_id: "phi3:mini"
+        max_tokens: 2048
+        temperature: 0.7
+        timeout: 30
+        cost_per_1k_tokens: 0.0
+        context_window: 4096
+        enabled: true
+        # Use cases: classification, tagging, yes/no decisions, extraction
+
+      - name: "llama3-8b"
+        provider: "ollama"
+        model_id: "llama3:8b"
+        max_tokens: 4096
+        temperature: 0.7
+        timeout: 60
+        cost_per_1k_tokens: 0.0
+        context_window: 8192
+        enabled: true
+        # Use cases: better classification, simple reasoning, validation
+
+  # Tier 2: Quality local models for moderate complexity
+  local_quality:
+    models:
+      - name: "mixtral-8x7b"
+        provider: "ollama"
+        model_id: "mixtral:8x7b"
+        max_tokens: 8192
+        temperature: 0.7
+        timeout: 120
+        cost_per_1k_tokens: 0.0
+        context_window: 32768
+        enabled: true
+        # Use cases: code generation, multi-step reasoning, summarization
+
+      - name: "llama3-70b"
+        provider: "vllm"
+        model_id: "meta-llama/Meta-Llama-3-70B-Instruct"
+        endpoint: "http://localhost:8000/v1/completions"
+        max_tokens: 8192
+        temperature: 0.7
+        timeout: 180
+        cost_per_1k_tokens: 0.0
+        context_window: 8192
+        enabled: false  # Requires vLLM server setup
+        # Use cases: complex code generation, architectural decisions
+
+      - name: "codestral"
+        provider: "ollama"
+        model_id: "codestral:22b"
+        max_tokens: 8192
+        temperature: 0.7
+        timeout: 120
+        cost_per_1k_tokens: 0.0
+        context_window: 32768
+        enabled: true
+        # Use cases: specialized code generation and editing
+
+  # Tier 3: API fallback for complex/critical tasks
+  api_fallback:
+    models:
+      - name: "claude-sonnet-4.5"
+        provider: "claude"
+        model_id: "claude-sonnet-4-5-20250929"
+        max_tokens: 8192
+        temperature: 0.7
+        timeout: 120
+        cost_per_1k_tokens: 3.0  # $3 per 1M input tokens
+        context_window: 200000
+        enabled: true
+        # Use cases: orchestration, critical decisions, quality fallback
+
+      - name: "gpt-4o"
+        provider: "openai"
+        model_id: "gpt-4o"
+        max_tokens: 4096
+        temperature: 0.7
+        timeout: 120
+        cost_per_1k_tokens: 2.5  # $2.50 per 1M input tokens
+        context_window: 128000
+        enabled: true
+        # Use cases: alternative API fallback, specific task types
+
+      - name: "claude-haiku"
+        provider: "claude"
+        model_id: "claude-3-5-haiku-20241022"
+        max_tokens: 8192
+        temperature: 0.7
+        timeout: 60
+        cost_per_1k_tokens: 0.8  # $0.80 per 1M input tokens
+        context_window: 200000
+        enabled: true
+        # Use cases: cost-effective API fallback for simpler tasks
+
+# Routing configuration
+routing:
+  # Prefer local models when available
+  prefer_local: true
+
+  # Quality threshold (0.0-1.0) for accepting responses
+  # Below this, trigger fallback to higher tier
+  quality_threshold: 0.7
+
+  # Max fallback attempts before giving up
+  max_fallback_attempts: 2
+
+  # Enable response caching (hash prompt -> cached response)
+  enable_caching: true
+
+  # Cache TTL in seconds (1 hour default)
+  cache_ttl: 3600
+
+  # Enable self-critique quality checks
+  enable_self_critique: true
+
+  # Complexity classification overrides
+  # Force specific actions to use specific tiers
+  action_tier_overrides:
+    spawn_daemon: "api_fallback"  # Always use API for orchestration
+    orch_status: "local_fast"     # Simple status check
+    consolidate: "local_quality"  # Can use local quality
+
+# Cost tracking and limits
+cost_control:
+  # Daily budget in USD (0 = unlimited)
+  daily_budget: 10.0
+
+  # Alert threshold (% of daily budget)
+  alert_threshold: 80
+
+  # Export usage log path
+  usage_log_path: "llm_usage.jsonl"
+
+  # Track metrics
+  track_metrics: true
+
+# Model-specific settings
+model_settings:
+  # Ollama endpoint (local)
+  ollama_endpoint: "http://localhost:11434"
+
+  # vLLM endpoint (if using)
+  vllm_endpoint: "http://localhost:8000/v1/completions"
+
+  # API keys (use env vars for security)
+  # ANTHROPIC_API_KEY, OPENAI_API_KEY should be set in environment
+
+# Quality check heuristics
+quality_checks:
+  # Minimum response length
+  min_response_length: 20
+
+  # Check for hallucination markers
+  check_hallucinations: true
+
+  # Validate JSON for action responses
+  validate_json: true
+
+  # Check for refusals
+  check_refusals: true
+
+  # Self-critique on low confidence
+  self_critique_threshold: 0.7
+
+# Action complexity classification
+# Maps action types to complexity levels (simple/moderate/complex)
+action_complexity:
+  # Simple tasks (LOCAL_FAST)
+  simple:
+    - "classify_memory"
+    - "extract_topic"
+    - "validate_format"
+    - "yes_no_decision"
+    - "tag_classification"
+    - "orch_status"
+    - "git_status"
+    - "list_files"
+
+  # Moderate tasks (LOCAL_QUALITY)
+  moderate:
+    - "write_memory"
+    - "read_file"
+    - "search_text"
+    - "git_log"
+    - "git_diff"
+    - "check_deps"
+    - "edit_file"
+    - "summarize"
+    - "consolidate"
+    - "run"
+
+  # Complex tasks (API_FALLBACK)
+  complex:
+    - "spawn_daemon"
+    - "exec"
+    - "http_request"
+    - "orchestrate"
+    - "debug_error"
+    - "multi_file_refactor"

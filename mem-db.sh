@@ -21,6 +21,7 @@
 #   ./mem-db.sh consolidate --all     # Consolidate all entries
 #   ./mem-db.sh prune 30              # Delete deprecated entries older than 30 days
 #   ./mem-db.sh prune --dry-run       # Preview what would be pruned
+#   ./mem-db.sh health                # Show health dashboard with diagnostics
 #
 # Query filters (same syntax as mem-search.sh):
 #   t=d              # type = decision (d/q/a/f/n)
@@ -356,7 +357,8 @@ type_map = {
     'q': 'questions',
     'a': 'actions',
     'f': 'facts',
-    'n': 'notes'
+    'n': 'notes',
+    'c': 'conversations'
 }
 
 if type_counts:
@@ -435,6 +437,35 @@ db_path = sys.argv[1]
 json_output = sys.argv[2] == "1"
 filters = sys.argv[3:]
 
+def format_relative_time(ts_str):
+    """Convert ISO timestamp to relative time + freshness flag."""
+    if not ts_str:
+        return ("?", False)
+    from datetime import datetime, timezone
+    ts_str = ts_str.replace('Z', '+00:00')
+    try:
+        ts = datetime.fromisoformat(ts_str)
+    except (ValueError, AttributeError):
+        return ("?", False)
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    delta = now - ts
+    total_seconds = delta.total_seconds()
+    if total_seconds < 0:
+        return (ts_str[:10], False)
+    is_fresh = total_seconds < 3600  # < 1 hour
+    if total_seconds < 60:
+        return (f"{int(total_seconds)}s ago", is_fresh)
+    elif total_seconds < 3600:
+        return (f"{int(total_seconds / 60)}m ago", is_fresh)
+    elif total_seconds < 86400:
+        return (f"{int(total_seconds / 3600)}h ago", is_fresh)
+    elif total_seconds < 2592000:
+        return (f"{int(total_seconds / 86400)}d ago", is_fresh)
+    else:
+        return (ts_str[:10], False)
+
 # Type abbreviation expansion
 def expand_type(t):
     type_map = {
@@ -442,7 +473,8 @@ def expand_type(t):
         'q': 'q', 'question': 'q',
         'a': 'a', 'action': 'a',
         'f': 'f', 'fact': 'f',
-        'n': 'n', 'note': 'n'
+        'n': 'n', 'note': 'n',
+        'c': 'c', 'conversation': 'c'
     }
     return type_map.get(t.lower(), t)
 
@@ -498,6 +530,18 @@ for f in filters:
     elif key == 'project':
         params['project'] = val
         where_clauses.append("project_id = :project")
+    elif key == 'recent':
+        import re
+        match = re.match(r'^(\d+)([hdwm])$', val.strip().lower())
+        if not match:
+            print(f"ERROR: Invalid recent format '{val}'. Use: 1h, 24h, 7d, 1w, 1m", file=sys.stderr)
+            sys.exit(1)
+        amount, unit = int(match.group(1)), match.group(2)
+        from datetime import datetime, timedelta, timezone
+        delta_map = {'h': timedelta(hours=amount), 'd': timedelta(days=amount), 'w': timedelta(weeks=amount), 'm': timedelta(days=amount*30)}
+        cutoff = datetime.now(timezone.utc) - delta_map[unit]
+        params['since'] = cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')
+        where_clauses.append("timestamp >= :since")
     elif key == 'limit':
         limit = int(val)
 
@@ -547,7 +591,8 @@ else:
         'q': 'QUESTION',
         'a': 'ACTION',
         'f': 'FACT',
-        'n': 'NOTE'
+        'n': 'NOTE',
+        'c': 'CONVERSATION'
     }
 
     for row in results:
@@ -565,8 +610,9 @@ else:
         print(f"  {text}")
         if choice:
             print(f"  \033[32mChoice:\033[0m {choice}")
-        ts_short = ts[:10] if len(ts) >= 10 else ts
-        meta_parts = [ts_short, session]
+        ts_rel, is_fresh = format_relative_time(ts)
+        fresh_marker = " \033[1;92m[FRESH]\033[0m" if is_fresh else ""
+        meta_parts = [ts_rel + fresh_marker, session]
         if scope and scope != 'shared':
             meta_parts.append(f"scope={scope}")
         if chat_id:
@@ -605,7 +651,8 @@ def expand_type(t):
         'q': 'q', 'question': 'q',
         'a': 'a', 'action': 'a',
         'f': 'f', 'fact': 'f',
-        'n': 'n', 'note': 'n'
+        'n': 'n', 'note': 'n',
+        'c': 'c', 'conversation': 'c'
     }
     return type_map.get(t.lower(), t)
 
@@ -630,8 +677,8 @@ if 'text' not in params:
 
 # Extract and validate type
 entry_type = expand_type(params.get('t') or params.get('type'))
-if entry_type not in ['d', 'q', 'a', 'f', 'n']:
-    print(f"ERROR: Invalid type '{entry_type}'. Must be d/q/a/f/n", file=sys.stderr)
+if entry_type not in ['d', 'q', 'a', 'f', 'n', 'c']:
+    print(f"ERROR: Invalid type '{entry_type}'. Must be d/q/a/f/n/c", file=sys.stderr)
     sys.exit(1)
 
 # Generate timestamp
@@ -941,6 +988,35 @@ import sqlite3
 db_path = sys.argv[1]
 filters = sys.argv[2:]
 
+def format_relative_time(ts_str):
+    """Convert ISO timestamp to relative time + freshness flag."""
+    if not ts_str:
+        return ("?", False)
+    from datetime import datetime, timezone
+    ts_str = ts_str.replace('Z', '+00:00')
+    try:
+        ts = datetime.fromisoformat(ts_str)
+    except (ValueError, AttributeError):
+        return ("?", False)
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    delta = now - ts
+    total_seconds = delta.total_seconds()
+    if total_seconds < 0:
+        return (ts_str[:10], False)
+    is_fresh = total_seconds < 3600  # < 1 hour
+    if total_seconds < 60:
+        return (f"{int(total_seconds)}s ago", is_fresh)
+    elif total_seconds < 3600:
+        return (f"{int(total_seconds / 60)}m ago", is_fresh)
+    elif total_seconds < 86400:
+        return (f"{int(total_seconds / 3600)}h ago", is_fresh)
+    elif total_seconds < 2592000:
+        return (f"{int(total_seconds / 86400)}d ago", is_fresh)
+    else:
+        return (ts_str[:10], False)
+
 # Type abbreviation expansion
 def expand_type(t):
     type_map = {
@@ -948,14 +1024,15 @@ def expand_type(t):
         'q': 'q', 'question': 'q',
         'a': 'a', 'action': 'a',
         'f': 'f', 'fact': 'f',
-        'n': 'n', 'note': 'n'
+        'n': 'n', 'note': 'n',
+        'c': 'c', 'conversation': 'c'
     }
     return type_map.get(t.lower(), t)
 
 # Type label for output (uppercase single char)
 def type_label(t):
     return {
-        'd': 'D', 'q': 'Q', 'a': 'A', 'f': 'F', 'n': 'N'
+        'd': 'D', 'q': 'Q', 'a': 'A', 'f': 'F', 'n': 'N', 'c': 'C'
     }.get(t, '?')
 
 # Parse filters
@@ -1010,6 +1087,18 @@ for f in filters:
     elif key == 'project':
         params['project'] = val
         where_clauses.append("project_id = :project")
+    elif key == 'recent':
+        import re
+        match = re.match(r'^(\d+)([hdwm])$', val.strip().lower())
+        if not match:
+            print(f"ERROR: Invalid recent format '{val}'. Use: 1h, 24h, 7d, 1w, 1m", file=sys.stderr)
+            sys.exit(1)
+        amount, unit = int(match.group(1)), match.group(2)
+        from datetime import datetime, timedelta, timezone
+        delta_map = {'h': timedelta(hours=amount), 'd': timedelta(days=amount), 'w': timedelta(weeks=amount), 'm': timedelta(days=amount*30)}
+        cutoff = datetime.now(timezone.utc) - delta_map[unit]
+        params['since'] = cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')
+        where_clauses.append("timestamp >= :since")
     elif key == 'limit':
         limit = int(val)
 
@@ -1046,10 +1135,11 @@ for row in results:
     # Build glyph header
     t = type_label(anchor_type)
     topic_str = topic or "general"
-    ts_short = ts[:10] if ts and len(ts) >= 10 else "?"
+    ts_rel, is_fresh = format_relative_time(ts)
+    fresh_tag = "[FRESH]" if is_fresh else ""
 
     # Core header: [TYPE][topic=X][ts=YYYY-MM-DD]
-    header = f"[{t}][topic={topic_str}][ts={ts_short}]"
+    header = f"[{t}][topic={topic_str}][ts={ts_rel}]{fresh_tag}"
 
     # Add choice for decisions
     if anchor_type == 'd' and choice:
@@ -1059,6 +1149,208 @@ for row in results:
     content = (text or "").replace('\n', ' ').strip()
 
     print(f"{header} {content}")
+PYEOF
+}
+
+cmd_health() {
+    if [[ ! -f "$DB_FILE" ]]; then
+        echo "Database not found: $DB_FILE" >&2
+        echo "Run './mem-db.sh init' first." >&2
+        exit 1
+    fi
+
+    local anchors_file="$SCRIPT_DIR/anchors.jsonl"
+
+    $PYTHON_BIN - "$DB_FILE" "$anchors_file" <<'PYEOF'
+import sys
+import os
+import sqlite3
+from datetime import datetime, timezone, timedelta
+
+db_path = sys.argv[1]
+anchors_path = sys.argv[2]
+
+# Database file size
+db_size = os.path.getsize(db_path)
+if db_size < 1024:
+    size_str = f"{db_size}B"
+elif db_size < 1024 * 1024:
+    size_str = f"{int(db_size / 1024)}K"
+else:
+    size_str = f"{int(db_size / (1024 * 1024))}M"
+
+conn = sqlite3.connect(db_path)
+cursor = conn.cursor()
+
+# Total entries
+cursor.execute("SELECT COUNT(*) FROM chunks")
+total_entries = cursor.fetchone()[0]
+
+# Embedding coverage
+cursor.execute("SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL")
+embedded_count = cursor.fetchone()[0]
+embedding_pct = int(100 * embedded_count / total_entries) if total_entries > 0 else 0
+
+# Get embedding model info
+cursor.execute("""
+    SELECT embedding_model, embedding_dim
+    FROM chunks
+    WHERE embedding IS NOT NULL
+    LIMIT 1
+""")
+emb_info = cursor.fetchone()
+if emb_info:
+    emb_model, emb_dim = emb_info
+else:
+    emb_model, emb_dim = "none", 0
+
+# Sync state - compare anchors.jsonl line count with DB count
+if os.path.exists(anchors_path):
+    with open(anchors_path) as f:
+        anchors_count = sum(1 for _ in f)
+    sync_status = "synced" if anchors_count == total_entries else f"drift (jsonl={anchors_count}, db={total_entries})"
+else:
+    sync_status = "no anchors.jsonl"
+
+# Type breakdown
+cursor.execute("""
+    SELECT anchor_type, COUNT(*)
+    FROM chunks
+    GROUP BY anchor_type
+    ORDER BY COUNT(*) DESC
+""")
+type_rows = cursor.fetchall()
+
+type_map = {
+    'd': 'decisions',
+    'q': 'questions',
+    'a': 'actions',
+    'f': 'facts',
+    'n': 'notes',
+    'c': 'conversations'
+}
+
+type_breakdown = []
+for t, count in type_rows:
+    if t:
+        type_name = type_map.get(t, t)
+        type_breakdown.append(f"  {type_name} ({t}): {count}")
+
+# Freshness metrics
+cursor.execute("SELECT COUNT(*) FROM chunks WHERE timestamp > datetime('now', '-1 hour')")
+fresh_1h = cursor.fetchone()[0]
+
+cursor.execute("SELECT COUNT(*) FROM chunks WHERE timestamp > datetime('now', '-24 hours')")
+fresh_24h = cursor.fetchone()[0]
+
+cursor.execute("SELECT COUNT(*) FROM chunks WHERE timestamp > datetime('now', '-7 days')")
+fresh_7d = cursor.fetchone()[0]
+
+# Most recent entry
+cursor.execute("SELECT timestamp FROM chunks ORDER BY timestamp DESC LIMIT 1")
+latest_ts = cursor.fetchone()
+
+if latest_ts and latest_ts[0]:
+    ts_str = latest_ts[0].replace('Z', '+00:00')
+    try:
+        ts = datetime.fromisoformat(ts_str)
+    except (ValueError, AttributeError):
+        ts = None
+
+    if ts:
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        delta = now - ts
+        total_seconds = delta.total_seconds()
+
+        if total_seconds < 60:
+            time_ago = f"{int(total_seconds)}s ago"
+        elif total_seconds < 3600:
+            time_ago = f"{int(total_seconds / 60)}m ago"
+        elif total_seconds < 86400:
+            time_ago = f"{int(total_seconds / 3600)}h ago"
+        elif total_seconds < 2592000:  # < 30 days
+            time_ago = f"{int(total_seconds / 86400)}d ago"
+        else:
+            time_ago = latest_ts[0][:10]  # Show date for very old entries
+
+        is_fresh = total_seconds < 3600
+        fresh_tag = " [FRESH]" if is_fresh else ""
+        last_entry = time_ago + fresh_tag
+    else:
+        last_entry = latest_ts[0][:10]
+else:
+    last_entry = "none"
+
+# Top topics
+cursor.execute("""
+    SELECT anchor_topic, COUNT(*) as cnt
+    FROM chunks
+    WHERE anchor_topic IS NOT NULL
+    GROUP BY anchor_topic
+    ORDER BY cnt DESC
+    LIMIT 5
+""")
+top_topics = cursor.fetchall()
+
+conn.close()
+
+# Health status logic
+health_status = "GREEN"
+health_msg = "all systems nominal"
+
+if total_entries == 0:
+    health_status = "RED"
+    health_msg = "no entries"
+elif sync_status.startswith("drift"):
+    health_status = "YELLOW"
+    health_msg = "sync drift detected"
+elif embedding_pct < 50 and total_entries > 10:
+    health_status = "YELLOW"
+    health_msg = f"low embedding coverage ({embedding_pct}%)"
+
+# Output dashboard
+print("=== Memory Health Dashboard ===")
+print(f"Database: memory.db ({size_str}, {total_entries} entries)")
+print(f"Embeddings: {embedded_count}/{total_entries} ({embedding_pct}%) [{emb_model}, dim={emb_dim}]")
+print(f"Sync: anchors.jsonl → memory.db ({sync_status})")
+print()
+
+print("Entry Types:")
+if type_breakdown:
+    for line in type_breakdown:
+        print(line)
+else:
+    print("  (no entries)")
+print()
+
+print("Freshness:")
+print(f"  Last entry: {last_entry}")
+print(f"  < 1 hour: {fresh_1h} entries")
+print(f"  < 24 hours: {fresh_24h} entries")
+print(f"  < 7 days: {fresh_7d} entries")
+print()
+
+if top_topics:
+    topic_strs = [f"{topic} ({count})" for topic, count in top_topics]
+    print(f"Top Topics: {', '.join(topic_strs)}")
+else:
+    print("Top Topics: (none)")
+print()
+
+# Health status with color
+if health_status == "GREEN":
+    status_color = "\033[1;32m"  # bright green
+    status_symbol = "✓"
+elif health_status == "YELLOW":
+    status_color = "\033[1;33m"  # bright yellow
+    status_symbol = "⚠"
+else:  # RED
+    status_color = "\033[1;31m"  # bright red
+    status_symbol = "✗"
+
+print(f"Health: {status_color}{status_symbol} {health_status}\033[0m ({health_msg})")
 PYEOF
 }
 
@@ -1079,7 +1371,9 @@ main() {
         consolidate) cmd_consolidate "$@" ;;
         prune) cmd_prune "$@" ;;
         render) cmd_render "$@" ;;
-        *) echo "Usage: $0 {init|migrate|sync|status|query|write|embed|semantic|topic-index|consolidate|prune|render}" >&2; exit 1 ;;
+        health) cmd_health "$@" ;;
+        recent) cmd_query "recent=24h" "limit=10" "$@" ;;
+        *) echo "Usage: $0 {init|migrate|sync|status|query|write|embed|semantic|topic-index|consolidate|prune|render|health|recent}" >&2; exit 1 ;;
     esac
 }
 

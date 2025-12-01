@@ -1,0 +1,135 @@
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                        OLLAMA QUICK REFERENCE                             ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ INSTALLATION (ONE COMMAND)                                              │
+└─────────────────────────────────────────────────────────────────────────┘
+  ./install-ollama.sh              # Install, configure, test everything
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ SERVICE MANAGEMENT                                                      │
+└─────────────────────────────────────────────────────────────────────────┘
+  systemctl --user status ollama   # Check if running
+  systemctl --user start ollama    # Start service
+  systemctl --user stop ollama     # Stop service
+  systemctl --user restart ollama  # Restart service
+  journalctl --user -u ollama -f   # View logs (follow)
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ MODEL MANAGEMENT                                                        │
+└─────────────────────────────────────────────────────────────────────────┘
+  ollama list                      # List installed models
+  ollama pull llama3.2:3b          # Download fast model (~2GB)
+  ollama pull qwen2.5:14b          # Download quality model (~9GB)
+  ollama rm model-name             # Remove a model
+  ollama show model-name           # Show model info
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ TESTING                                                                 │
+└─────────────────────────────────────────────────────────────────────────┘
+  ollama run llama3.2:3b "Hello"           # Test fast model
+  ollama run qwen2.5:14b "Explain AI"      # Test quality model
+  ./test-ollama.py                         # Run Python integration tests
+  curl http://127.0.0.1:11434/api/tags     # Test API endpoint
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ RECOMMENDED MODELS FOR DAEMON                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+  Fast Model:    llama3.2:3b       # Quick tasks, JSON, classification
+  Quality Model: qwen2.5:14b       # Reasoning, code analysis, planning
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ ENVIRONMENT SETUP                                                       │
+└─────────────────────────────────────────────────────────────────────────┘
+  source .env.ollama               # Load environment variables
+  export OLLAMA_HOST=http://127.0.0.1:11434
+  export OLLAMA_FAST_MODEL=llama3.2:3b
+  export OLLAMA_QUALITY_MODEL=qwen2.5:14b
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ API USAGE (CURL)                                                        │
+└─────────────────────────────────────────────────────────────────────────┘
+  # Generate text
+  curl http://127.0.0.1:11434/api/generate -d '{
+    "model": "llama3.2:3b",
+    "prompt": "Hello",
+    "stream": false
+  }'
+
+  # Chat
+  curl http://127.0.0.1:11434/api/chat -d '{
+    "model": "llama3.2:3b",
+    "messages": [{"role": "user", "content": "Hi"}],
+    "stream": false
+  }'
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ PYTHON USAGE                                                            │
+└─────────────────────────────────────────────────────────────────────────┘
+  import requests
+
+  def ask_ollama(prompt, model="qwen2.5:14b"):
+      resp = requests.post(
+          "http://127.0.0.1:11434/api/generate",
+          json={"model": model, "prompt": prompt, "stream": False}
+      )
+      return resp.json()["response"]
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ HEALTH CHECKS                                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+  systemctl --user is-active ollama        # Check if running
+  curl http://127.0.0.1:11434/api/tags     # API health
+  ollama list                              # Verify models
+  du -sh ~/.ollama                         # Check disk usage
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ TROUBLESHOOTING                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+  journalctl --user -u ollama -n 50        # Last 50 log lines
+  ~/.local/bin/ollama serve                # Manual start (debug)
+  ss -tlnp | grep 11434                    # Check if port is bound
+  df -h ~                                  # Check disk space
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ DISK SPACE                                                              │
+└─────────────────────────────────────────────────────────────────────────┘
+  Expected usage:
+    llama3.2:3b:  ~2GB
+    qwen2.5:14b:  ~9GB
+    Total:        ~11GB
+
+  Commands:
+    du -sh ~/.ollama/models          # Check models directory
+    ollama list                      # See individual sizes
+    ollama rm unused-model           # Free space
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ FILES & PATHS                                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+  Binary:      ~/.local/bin/ollama
+  Models:      ~/.ollama/models
+  Service:     ~/.config/systemd/user/ollama.service
+  Environment: .env.ollama (in repo)
+  Test script: test-ollama.py (in repo)
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ PERFORMANCE (CPU, approximate)                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+  llama3.2:3b:   2-3s for 50 tokens,  15-20s for 500 tokens
+  qwen2.5:14b:   5-8s for 50 tokens,  40-60s for 500 tokens
+
+  With GPU: 2-5x faster
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ DOCUMENTATION                                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+  Detailed guide:  OLLAMA-SETUP.md
+  This reference:  ollama-quickref.txt
+  Ollama docs:     https://github.com/ollama/ollama
+  Model library:   https://ollama.com/library
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║ QUICK START: ./install-ollama.sh && source .env.ollama                   ║
+╚═══════════════════════════════════════════════════════════════════════════╝

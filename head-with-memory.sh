@@ -237,6 +237,7 @@ build_prompt() {
     fi
 
     if [[ -n "$memory_block" ]]; then
+        echo "# Memory Context (retrieved: $(date -Iseconds))"
         cat <<'GLYPH_HEADER'
 # Memory Glyphs
 Format: [TYPE][topic=X][ts=DATE][choice=Y] content
