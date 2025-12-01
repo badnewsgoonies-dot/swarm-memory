@@ -1,0 +1,33 @@
+[Unit]
+Description=Swarm Memory Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/home/geni/swarm/memory
+ExecStart=/usr/bin/python3 /home/geni/swarm/memory/swarm_daemon.py --resume
+Restart=on-failure
+RestartSec=30
+
+# Logging
+StandardOutput=append:/home/geni/swarm/memory/daemon.log
+StandardError=append:/home/geni/swarm/memory/daemon.log
+
+# Safety limits
+CPUQuota=50%
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
+
+# Installation:
+#   sudo cp swarm_daemon.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable swarm_daemon
+#   sudo systemctl start swarm_daemon
+#
+# Usage:
+#   systemctl status swarm_daemon
+#   journalctl -u swarm_daemon -f
+#   touch /home/geni/swarm/memory/daemon.kill  # Emergency stop
