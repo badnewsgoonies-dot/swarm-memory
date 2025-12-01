@@ -289,3 +289,62 @@ The `build_memory_context()` function enforces:
 - **Public is explicit**: Only `visibility=public` entries are shared across sessions
 - **Custom filters are user responsibility**: `--filters` bypasses scoping (use carefully)
 
+---
+
+## 9. Governor System (Phase 6)
+
+The governor enforces safety rails on autonomous daemon actions.
+
+### 9.1. Action Classification
+
+| Decision | Actions | Behavior |
+|----------|---------|----------|
+| **ALLOW** | `write_memory` (f/n/q/a), `mem_search`, `sleep`, `done` | Execute immediately |
+| **ESCALATE** | `write_memory` (d), `consolidate`, `propose_config_update` | Queue for human review |
+| **DENY** | `exec`, `delete`, `drop`, `truncate` | Block immediately |
+
+### 9.2. CLI Usage
+
+```bash
+# Check if action is allowed
+./governor.py check '{"action": "write_memory", "type": "f", "text": "..."}'
+
+# List pending changes awaiting review
+./governor.py pending
+
+# Approve a pending change (executes the action)
+./governor.py approve 123 --notes "Looks good"
+
+# Reject a pending change
+./governor.py reject 123 --notes "Not needed"
+
+# View audit log
+./governor.py audit --limit 20
+```
+
+### 9.3. Daemon Integration
+
+The daemon automatically uses the governor unless disabled:
+
+```bash
+# Normal operation (governor enabled)
+./swarm_daemon.py --objective "Organize memory"
+
+# Disable governor (for testing)
+./swarm_daemon.py --objective "Test task" --no-governor
+```
+
+### 9.4. Database Tables
+
+- **pending_changes**: Escalated actions awaiting review
+  - `action_type`, `action_data`, `proposed_by`, `status` (pending/approved/rejected)
+- **audit_log**: All governor decisions
+  - `timestamp`, `action_type`, `decision`, `reason`, `actor`
+
+### 9.5. Safety Guarantees
+
+1. **Decisions require human approval**: No autonomous decision-making without review
+2. **All actions logged**: Complete audit trail in `audit_log` table
+3. **Dangerous ops blocked**: `exec`, `delete`, `drop` always denied
+4. **Escalation queue**: Blocked actions don't halt daemon, just queue for review
+

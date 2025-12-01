@@ -34,6 +34,9 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
+# Import governor for action enforcement
+from governor import Governor
+
 # Configuration
 SCRIPT_DIR = Path(__file__).parent.resolve()
 STATE_FILE = SCRIPT_DIR / "daemon_state.json"
@@ -299,12 +302,17 @@ Your action:"""
     return prompt
 
 
-def run_daemon(state, verbose=False):
+def run_daemon(state, verbose=False, use_governor=True):
     """Main daemon loop"""
     logger.info(f"Starting daemon with objective: {state.objective}")
     state.status = "running"
     state.started_at = datetime.now()
     state.save()
+
+    # Initialize governor for action enforcement
+    governor = Governor(str(SCRIPT_DIR / "memory.db")) if use_governor else None
+    if governor:
+        logger.info("Governor enabled - actions will be pre-checked")
 
     last_results = None
 
@@ -349,9 +357,49 @@ def run_daemon(state, verbose=False):
             state.save()
             continue
 
-        # Execute first action
+        # Execute first action (with governor pre-check)
         action_data = actions[0]
-        logger.info(f"Executing: {json.dumps(action_data)}")
+        logger.info(f"Proposed action: {json.dumps(action_data)}")
+
+        # Governor pre-flight check
+        if governor:
+            gov_result = governor.check_action(action_data)
+            logger.info(f"Governor decision: {gov_result['decision']} - {gov_result['reason']}")
+
+            if gov_result['decision'] == 'DENY':
+                result = {'success': False, 'error': f"Blocked by governor: {gov_result['reason']}"}
+                last_results = result
+                state.record_iteration()
+                state.history.append({
+                    'action': action_data.get('action'),
+                    'data': action_data,
+                    'result': result,
+                    'governor': 'DENY'
+                })
+                state.save()
+                continue
+
+            elif gov_result['decision'] == 'ESCALATE':
+                result = {
+                    'success': False,
+                    'escalated': True,
+                    'pending_id': gov_result.get('pending_id'),
+                    'reason': gov_result['reason']
+                }
+                logger.info(f"Action escalated to pending queue (id={gov_result.get('pending_id')})")
+                last_results = result
+                state.record_iteration()
+                state.history.append({
+                    'action': action_data.get('action'),
+                    'data': action_data,
+                    'result': result,
+                    'governor': 'ESCALATE'
+                })
+                state.save()
+                continue
+
+            # ALLOW - proceed with execution
+            logger.info(f"Governor approved, executing action")
 
         result = execute_action(action_data)
         last_results = result
@@ -394,6 +442,7 @@ def main():
     parser.add_argument('--clear-kill', action='store_true', help='Clear kill switch')
     parser.add_argument('--status', action='store_true', help='Show daemon status')
     parser.add_argument('--verbose', '-v', action='store_true', help='Log full prompts/responses at INFO level')
+    parser.add_argument('--no-governor', action='store_true', help='Disable governor pre-flight checks')
     args = parser.parse_args()
 
     if args.clear_kill:
@@ -437,7 +486,7 @@ def main():
     MAX_ITERATIONS_PER_HOUR = args.max_iterations
 
     try:
-        run_daemon(state, verbose=args.verbose)
+        run_daemon(state, verbose=args.verbose, use_governor=not args.no_governor)
     except KeyboardInterrupt:
         logger.info("Daemon interrupted by user")
         state.status = "interrupted"

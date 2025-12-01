@@ -212,6 +212,36 @@ CREATE TABLE IF NOT EXISTS topic_index (
 """)
 print("Created topic_index table (if not exists)")
 
+# Create pending_changes table for governor escalation
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS pending_changes (
+    id INTEGER PRIMARY KEY,
+    action_type TEXT NOT NULL,
+    action_data TEXT NOT NULL,
+    proposed_by TEXT,
+    proposed_at TEXT DEFAULT (datetime('now')),
+    status TEXT DEFAULT 'pending',
+    reviewed_by TEXT,
+    reviewed_at TEXT,
+    review_notes TEXT
+)
+""")
+print("Created pending_changes table (if not exists)")
+
+# Create audit_log table for all governor decisions
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY,
+    timestamp TEXT DEFAULT (datetime('now')),
+    action_type TEXT NOT NULL,
+    action_data TEXT,
+    decision TEXT NOT NULL,
+    reason TEXT,
+    actor TEXT
+)
+""")
+print("Created audit_log table (if not exists)")
+
 if added_columns:
     print(f"Created indexes: idx_scope, idx_chat_id, idx_visibility")
 else:
