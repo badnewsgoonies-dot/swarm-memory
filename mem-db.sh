@@ -10,6 +10,11 @@
 #   ./mem-db.sh status            # Show database statistics and sync state
 #   ./mem-db.sh query [filters]   # Search database with filters
 #   ./mem-db.sh write [params]    # Insert new memory entry with scope metadata
+#   ./mem-db.sh embed             # Generate embeddings for chunks
+#   ./mem-db.sh embed --dry-run   # Preview without generating
+#   ./mem-db.sh embed --force     # Re-embed even if already embedded
+#   ./mem-db.sh semantic "query"  # Semantic search with hybrid scoring
+#   ./mem-db.sh semantic "query" --limit 10 --tau 7 --beta 0.3
 #
 # Query filters (same syntax as mem-search.sh):
 #   t=d              # type = decision (d/q/a/f/n)
@@ -165,7 +170,10 @@ columns_to_add = [
     ("chat_id", "TEXT"),
     ("agent_role", "TEXT"),
     ("visibility", "TEXT DEFAULT 'public'"),
-    ("project_id", "TEXT")
+    ("project_id", "TEXT"),
+    ("embedding", "BLOB"),
+    ("embedding_model", "TEXT"),
+    ("embedding_dim", "INTEGER")
 ]
 
 added_columns = []
@@ -256,8 +264,6 @@ cursor.execute("""
 """)
 sync_states = cursor.fetchall()
 
-conn.close()
-
 # Print status
 print("=== Memory Database Status ===")
 print(f"Database: {db_file}")
@@ -289,8 +295,37 @@ if sync_states:
 else:
     print("  - No sync state recorded")
 
+# Check if embedding column exists
+cursor = conn.cursor()
+cursor.execute("PRAGMA table_info(chunks)")
+columns = {row[1] for row in cursor.fetchall()}
+
 print()
-print(f"Embeddings: 0/{total_chunks} (0%) - not yet implemented")
+if 'embedding' in columns:
+    cursor.execute("SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL")
+    embedded_count = cursor.fetchone()[0]
+    pct = 100 * embedded_count // total_chunks if total_chunks > 0 else 0
+    print(f"Embeddings: {embedded_count}/{total_chunks} ({pct}%)")
+
+    # Show model breakdown if any embeddings exist
+    if embedded_count > 0:
+        cursor.execute("""
+            SELECT embedding_model, embedding_dim, COUNT(*)
+            FROM chunks
+            WHERE embedding IS NOT NULL
+            GROUP BY embedding_model, embedding_dim
+        """)
+        rows = cursor.fetchall()
+        if rows:
+            print("Embedding models:")
+            for model, dim, count in rows:
+                model = model or "unknown"
+                dim = dim or 0
+                print(f"  - {model} (dim={dim}): {count} chunks")
+else:
+    print(f"Embeddings: not configured (run ./mem-db.sh migrate)")
+
+conn.close()
 PYEOF
 }
 
@@ -610,6 +645,28 @@ print(json.dumps(entry, indent=2))
 PYEOF
 }
 
+cmd_embed() {
+    local embed_script="$SCRIPT_DIR/mem-embed.py"
+    if [[ ! -x "$embed_script" ]]; then
+        echo "ERROR: mem-embed.py not found or not executable" >&2
+        exit 1
+    fi
+
+    # Pass all arguments through
+    $PYTHON_BIN "$embed_script" --db "$DB_FILE" "$@"
+}
+
+cmd_semantic() {
+    local semantic_script="$SCRIPT_DIR/mem-semantic.py"
+    if [[ ! -x "$semantic_script" ]]; then
+        echo "ERROR: mem-semantic.py not found or not executable" >&2
+        exit 1
+    fi
+
+    # Pass all arguments through
+    $PYTHON_BIN "$semantic_script" --db "$DB_FILE" "$@"
+}
+
 main() {
     local cmd="${1:-help}"
     shift || true
@@ -621,7 +678,9 @@ main() {
         status) cmd_status "$@" ;;
         query) cmd_query "$@" ;;
         write) cmd_write "$@" ;;
-        *) echo "Usage: $0 {init|migrate|sync|status|query|write}" >&2; exit 1 ;;
+        embed) cmd_embed "$@" ;;
+        semantic) cmd_semantic "$@" ;;
+        *) echo "Usage: $0 {init|migrate|sync|status|query|write|embed|semantic}" >&2; exit 1 ;;
     esac
 }
 

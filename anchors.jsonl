@@ -37,3 +37,7 @@
 ["n", null, "assessment note", null, null, "2025-11-30T20:39:27Z", null, null]
 ["f", null, "role-based fact", null, null, "2025-11-30T20:51:29Z", null, null]
 ["n", null, "Fix test", null, null, "2025-11-30T20:55:24Z", null, null]
+["n", null, "dup-check", null, null, "2025-11-30T21:55:39Z", null, null]
+["d", "embeddings", "Use OpenAI API only for embeddings, no local ML deps", "api-only", "User has no GPU, ChatGPT Pro != API access", "2025-11-30T23:58:20Z", "phase4-5", null]
+["d", "retrieval", "Hybrid scoring formula: score = \u03b1\u00b7sim + \u03b2\u00b7exp(-\u0394t/\u03c4)", "\u03b1=1.0, \u03b2=0.3, \u03c4=7", "Balances relevance with recency", "2025-11-30T23:58:25Z", "phase4-5", null]
+["d", "workflow", "Claude actively uses memory during conversations - queries context, records decisions", "active-memory", null, "2025-11-30T23:59:23Z", "phase4-5", null]
