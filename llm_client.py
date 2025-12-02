@@ -32,6 +32,9 @@ CODEX CLI (via codex exec):
     - high   - Maximizes reasoning depth for complex problems
     - xhigh  - Extra high reasoning depth
 
+COPILOT CLI (via copilot -p):
+  - gpt-5.1  - GitHub Copilot's default model
+
 Tiers:
   fast   → llama3.2:3b (Ollama) - Classification, routing
   code   → qwen2.5-coder:7b (Ollama) - Code generation
@@ -178,6 +181,40 @@ MODELS = {
         "timeout": 300,
     },
 
+    # Effort variant tiers for comparison testing
+    "codex-mini-high": {
+        "provider": "codex",
+        "model": "gpt-5.1-codex-mini",
+        "effort": "high",
+        "description": "Codex Mini with high reasoning",
+        "max_tokens": 4000,
+        "timeout": 180,
+    },
+    "codex-5.1-high": {
+        "provider": "codex",
+        "model": "gpt-5.1",
+        "effort": "high",
+        "description": "GPT-5.1 with high reasoning",
+        "max_tokens": 8000,
+        "timeout": 300,
+    },
+    "codex-max-high": {
+        "provider": "codex",
+        "model": "gpt-5.1-codex-max",
+        "effort": "high",
+        "description": "Codex Max with high reasoning",
+        "max_tokens": 8000,
+        "timeout": 300,
+    },
+    "codex-max-low": {
+        "provider": "codex",
+        "model": "gpt-5.1-codex-max",
+        "effort": "low",
+        "description": "Codex Max with low reasoning (fast)",
+        "max_tokens": 8000,
+        "timeout": 120,
+    },
+
     # Alias: MAX points to codex with extra high effort
     "max": {
         "provider": "codex",
@@ -187,6 +224,15 @@ MODELS = {
         "max_tokens": 8000,
         "timeout": 600,
     },
+
+    # Copilot CLI - GitHub Copilot's GPT-5.1
+    "copilot": {
+        "provider": "copilot",
+        "model": "gpt-5.1",
+        "description": "GitHub Copilot CLI (gpt-5.1)",
+        "max_tokens": 4000,
+        "timeout": 120,
+    },
 }
 
 # All available models by provider
@@ -195,6 +241,7 @@ ALTERNATIVE_MODELS = {
     "openai": ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo"],
     "claude": ["opus", "sonnet", "haiku"],
     "codex": ["gpt-5.1-codex-max", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.1"],
+    "copilot": ["gpt-5.1"],
 }
 
 # Fallback chain: if one fails, try next
@@ -372,14 +419,56 @@ class LLMClient:
         """Call Claude CLI (claude -p)
 
         Models: opus (Opus 4.5), sonnet (Sonnet 4.5), haiku (Haiku 4.5)
+
+        Sandbox workaround: If ~/.claude is not writable (e.g., in Codex sandbox),
+        we set HOME=/tmp so Claude writes its config to /tmp/.claude instead.
         """
         cmd = ["claude", "-p", prompt]
         if model and model != "default":
             cmd = ["claude", "--model", model, "-p", prompt]
 
+        # Detect sandbox: check if ~/.claude is writable
+        env = os.environ.copy()
+        home_dir = Path.home()
+        claude_dir = home_dir / ".claude"
+
+        try:
+            # Test write access to ~/.claude directory
+            claude_dir.mkdir(parents=True, exist_ok=True)
+            test_file = claude_dir / ".write_test"
+            test_file.touch()
+            test_file.unlink()
+        except (PermissionError, OSError):
+            # Can't write to ~/.claude - likely in sandbox
+            # Use /tmp as HOME so Claude writes to /tmp/.claude
+            env["HOME"] = "/tmp"
+            tmp_claude = Path("/tmp/.claude")
+            tmp_claude.mkdir(parents=True, exist_ok=True)
+
+            # Copy credentials from real ~/.claude if they exist
+            real_claude = Path("/home/geni/.claude")  # Fallback to known path
+            if not real_claude.exists():
+                # Try to find the real home from /etc/passwd or environment
+                real_home = os.environ.get("REAL_HOME", "/home/geni")
+                real_claude = Path(real_home) / ".claude"
+
+            # Copy essential files: credentials and settings
+            for filename in [".credentials.json", "settings.json", "settings.local.json"]:
+                src = real_claude / filename
+                dst = tmp_claude / filename
+                if src.exists() and not dst.exists():
+                    try:
+                        import shutil
+                        shutil.copy2(src, dst)
+                    except Exception:
+                        pass  # Best effort
+
+            # Create projects dir for Claude's session tracking
+            (tmp_claude / "projects").mkdir(parents=True, exist_ok=True)
+
         start = time.time()
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
             latency = int((time.time() - start) * 1000)
             response = (result.stdout + result.stderr).strip()
 
@@ -457,6 +546,52 @@ class LLMClient:
                 success=False, error=str(e),
             )
 
+    def _call_copilot(self, prompt: str, model: str = "gpt-5.1", max_tokens: int = 4000, timeout: int = 120) -> LLMResponse:
+        """Call Copilot CLI (copilot -p)
+
+        Uses GitHub Copilot's gpt-5.1 model via the copilot CLI.
+        Strips usage stats from output.
+        """
+        cmd = ["copilot", "-p", prompt, "--allow-all-tools"]
+
+        start = time.time()
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            latency = int((time.time() - start) * 1000)
+            output = (result.stdout + result.stderr).strip()
+
+            # Strip usage stats from output (everything after "Total usage est:")
+            if "Total usage est:" in output:
+                output = output.split("Total usage est:")[0].strip()
+
+            if result.returncode != 0 and not output:
+                return LLMResponse(
+                    text="", model=model, provider="copilot", tier="",
+                    latency_ms=latency, success=False,
+                    error=f"Copilot CLI failed: exit {result.returncode}",
+                )
+
+            return LLMResponse(
+                text=output, model=model, provider="copilot", tier="",
+                latency_ms=latency, success=True,
+            )
+        except subprocess.TimeoutExpired:
+            return LLMResponse(
+                text="", model=model, provider="copilot", tier="",
+                latency_ms=int((time.time() - start) * 1000),
+                success=False, error="Copilot CLI timeout",
+            )
+        except FileNotFoundError:
+            return LLMResponse(
+                text="", model=model, provider="copilot", tier="",
+                success=False, error="Copilot CLI not found",
+            )
+        except Exception as e:
+            return LLMResponse(
+                text="", model=model, provider="copilot", tier="",
+                success=False, error=str(e),
+            )
+
     def _classify_task(self, prompt: str) -> str:
         """Auto-classify prompt to select tier"""
         prompt_lower = prompt.lower()
@@ -516,6 +651,8 @@ class LLMClient:
         elif config["provider"] == "codex":
             effort = config.get("effort", "high")
             response = self._call_codex(full_prompt, config["model"], effort, max_tokens, timeout)
+        elif config["provider"] == "copilot":
+            response = self._call_copilot(full_prompt, config["model"], max_tokens, timeout)
         else:
             response = LLMResponse(
                 text="", model=config["model"], provider=config["provider"], tier=tier,
@@ -584,6 +721,16 @@ class LLMClient:
                 results["codex"] = {"status": "error"}
         except:
             results["codex"] = {"status": "not_installed"}
+
+        # Copilot CLI
+        try:
+            result = subprocess.run(["copilot", "--version"], capture_output=True, timeout=5)
+            if result.returncode == 0:
+                results["copilot"] = {"status": "available", "models": ALTERNATIVE_MODELS["copilot"]}
+            else:
+                results["copilot"] = {"status": "error"}
+        except:
+            results["copilot"] = {"status": "not_installed"}
 
         return results
 
