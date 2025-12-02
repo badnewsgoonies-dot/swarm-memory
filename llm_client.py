@@ -111,12 +111,69 @@ MODELS = {
         "timeout": 300,
     },
 
+    # Claude variants
+    "claude-opus": {
+        "provider": "claude",
+        "model": "opus",
+        "description": "Claude Opus 4.5 - most capable",
+        "max_tokens": 8000,
+        "timeout": 300,
+    },
+    "claude-sonnet": {
+        "provider": "claude",
+        "model": "sonnet",
+        "description": "Claude Sonnet 4.5 - balanced",
+        "max_tokens": 8000,
+        "timeout": 180,
+    },
+    "claude-haiku": {
+        "provider": "claude",
+        "model": "haiku",
+        "description": "Claude Haiku 4.5 - fastest",
+        "max_tokens": 4000,
+        "timeout": 60,
+    },
+
     # Tier 5: CODEX - Codex CLI maximum capability
     "codex": {
         "provider": "codex",
         "model": "gpt-5.1-codex-max",
         "effort": "high",  # low, medium, high, xhigh
         "description": "Codex flagship - high reasoning",
+        "max_tokens": 8000,
+        "timeout": 300,
+    },
+
+    # Codex variants - all models with configurable effort
+    "codex-max": {
+        "provider": "codex",
+        "model": "gpt-5.1-codex-max",
+        "effort": "xhigh",
+        "description": "Codex Max - flagship with xhigh reasoning",
+        "max_tokens": 8000,
+        "timeout": 600,
+    },
+    "codex-std": {
+        "provider": "codex",
+        "model": "gpt-5.1-codex",
+        "effort": "high",
+        "description": "Codex Standard - optimized for code",
+        "max_tokens": 8000,
+        "timeout": 300,
+    },
+    "codex-mini": {
+        "provider": "codex",
+        "model": "gpt-5.1-codex-mini",
+        "effort": "medium",
+        "description": "Codex Mini - faster, cheaper",
+        "max_tokens": 4000,
+        "timeout": 120,
+    },
+    "codex-5.1": {
+        "provider": "codex",
+        "model": "gpt-5.1",
+        "effort": "high",
+        "description": "GPT-5.1 - broad world knowledge",
         "max_tokens": 8000,
         "timeout": 300,
     },
