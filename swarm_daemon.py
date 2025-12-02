@@ -86,6 +86,7 @@ class DaemonState:
         self.unrestricted = False
         self.llm_provider = "claude"
         self.llm_model = None
+        self.llm_tier = "auto"
 
     def save(self):
         """Save state to file"""
@@ -100,7 +101,8 @@ class DaemonState:
             "repo_root": self.repo_root,
             "unrestricted": self.unrestricted,
             "llm_provider": self.llm_provider,
-            "llm_model": self.llm_model
+            "llm_model": self.llm_model,
+            "llm_tier": self.llm_tier
         }
         self.state_file.write_text(json.dumps(data, indent=2))
 
@@ -123,6 +125,7 @@ class DaemonState:
             self.unrestricted = bool(data.get("unrestricted", False))
             self.llm_provider = data.get("llm_provider", "claude")
             self.llm_model = data.get("llm_model")
+            self.llm_tier = data.get("llm_tier", "auto")
             return True
         except Exception as e:
             logger.error(f"Failed to load state: {e}")
@@ -153,16 +156,56 @@ def clear_kill_switch():
         KILL_FILE.unlink()
 
 
-def call_llm(prompt, verbose=False, provider="claude", model=None):
-    """Call LLM CLI with prompt (Claude or Codex)"""
+def call_llm(prompt, verbose=False, provider="claude", model=None, tier="auto"):
+    """Call LLM with prompt (Claude CLI, Codex, or Hybrid local/API)
+
+    Providers:
+        - claude: Claude CLI (default)
+        - codex: OpenAI Codex CLI
+        - hybrid: Tiered Ollama + OpenAI (fast/code/smart/auto)
+        - ollama: Direct Ollama call
+        - openai: Direct OpenAI API call
+    """
     if verbose:
-        logger.info(f"LLM prompt ({len(prompt)} chars):\n{prompt[:500]}...")
+        logger.info(f"LLM prompt ({len(prompt)} chars, provider={provider}, tier={tier}):\n{prompt[:500]}...")
     else:
         logger.debug(f"LLM prompt: {prompt[:200]}...")
 
+    # Hybrid provider using llm_client
+    if provider in ("hybrid", "ollama", "openai"):
+        try:
+            from llm_client import LLMClient
+            client = LLMClient()
+
+            # Map provider to tier
+            if provider == "ollama":
+                use_tier = model or "fast"  # Use model as tier hint for ollama
+            elif provider == "openai":
+                use_tier = "smart"
+            else:
+                use_tier = tier
+
+            response = client.complete(prompt, tier=use_tier)
+
+            if response.success:
+                if verbose:
+                    logger.info(f"LLM response ({response.tier}, {response.latency_ms}ms):\n{response.text[:500]}...")
+                return response.text
+            else:
+                logger.error(f"Hybrid LLM failed: {response.error}")
+                return None
+        except ImportError:
+            logger.error("llm_client module not found, falling back to claude")
+            provider = "claude"
+        except Exception as e:
+            logger.error(f"Hybrid LLM call failed: {e}")
+            return None
+
+    # Codex CLI
     if provider == "codex":
         codex_model = model or os.environ.get("CODEX_MODEL", "gpt-5.1-codex-latest")
         cmd = ['codex', 'exec', '-m', codex_model, '--full-auto', prompt]
+    # Claude CLI (default)
     else:
         claude_model = model or os.environ.get("CLAUDE_MODEL")
         cmd = ['claude']
@@ -859,7 +902,7 @@ def run_daemon(state, repo_root: Path, unrestricted: bool, verbose=False, use_go
         prompt = build_prompt(state, repo_root, unrestricted, last_results)
         logger.info(f"Iteration {state.iteration}: calling LLM")
 
-        response = call_llm(prompt, verbose=verbose, provider=state.llm_provider, model=state.llm_model)
+        response = call_llm(prompt, verbose=verbose, provider=state.llm_provider, model=state.llm_model, tier=state.llm_tier)
         if not response:
             logger.error("No response from LLM")
             state.status = "error"
@@ -968,8 +1011,11 @@ def main():
     parser.add_argument('--no-governor', action='store_true', help='Disable governor pre-flight checks')
     parser.add_argument('--repo-root', default=str(DEFAULT_REPO_ROOT), help='Repository root for actions')
     parser.add_argument('--unrestricted', action='store_true', help='Allow full action set (exec/edit/http); logs all actions')
-    parser.add_argument('--llm', choices=['claude', 'codex'], default='claude', help='LLM provider (default: claude)')
+    parser.add_argument('--llm', choices=['claude', 'codex', 'hybrid', 'ollama', 'openai'], default='claude',
+                       help='LLM provider: claude (CLI), codex, hybrid (Ollama+OpenAI), ollama, openai')
     parser.add_argument('--llm-model', help='Override model for the chosen provider')
+    parser.add_argument('--tier', choices=['auto', 'fast', 'code', 'smart'], default='auto',
+                       help='LLM tier for hybrid mode: fast (llama3.2:3b), code (deepseek-coder), smart (gpt-4o-mini)')
     parser.add_argument('--state-file', help='Custom state file path (for sub-daemons)')
     args = parser.parse_args()
 
@@ -1005,6 +1051,7 @@ def main():
         state.unrestricted = bool(args.unrestricted or state.unrestricted)
         state.llm_provider = args.llm or state.llm_provider
         state.llm_model = args.llm_model or state.llm_model
+        state.llm_tier = args.tier or state.llm_tier
     else:
         # New objective
         objective = args.objective
@@ -1020,6 +1067,7 @@ def main():
         state.unrestricted = args.unrestricted
         state.llm_provider = args.llm
         state.llm_model = args.llm_model
+        state.llm_tier = args.tier
 
     # Set max iterations
     global MAX_ITERATIONS_PER_HOUR

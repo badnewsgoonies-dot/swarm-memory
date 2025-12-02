@@ -13,3 +13,4 @@ daemon.kill
 .claude.json
 .claude.json.backup
 .claude-tmp/
+.env

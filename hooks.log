@@ -126,3 +126,181 @@ ERROR: Invalid type 'c'. Must be d/q/a/f/n
 [2025-12-01T20:25:48-05:00] [msg-assistant] SKIP: Too short (96 chars)
 [2025-12-01T20:26:15-05:00] [msg-assistant] SKIP: Too short (23 chars)
 [2025-12-01T20:26:57-05:00] [msg-assistant] SKIP: Too short (95 chars)
+[2025-12-01T22:52:23-05:00] [msg-user] SKIP: Too short (6 chars)
+[2025-12-01T22:52:39-05:00] [msg-assistant] SKIP: Too short (47 chars)
+[2025-12-01T22:53:36-05:00] [msg-user] RECORDED: User message (136 chars, 25 words, session=3e76a4fe)
+{
+[2025-12-01T22:53:50-05:00] [msg-assistant] SKIP: Too short (48 chars)
+[2025-12-01T22:59:57-05:00] [msg-user] RECORDED: User message (137 chars, 29 words, session=3e76a4fe)
+{
+[2025-12-01T23:00:09-05:00] [msg-assistant] SKIP: Too short (57 chars)
+[2025-12-01T23:00:34-05:00] [msg-user] RECORDED: User message (39 chars, 8 words, session=3e76a4fe)
+{
+[2025-12-01T23:00:43-05:00] [msg-assistant] SKIP: Too short (49 chars)
+[2025-12-01T23:02:28-05:00] [msg-user] SKIP: Too short (10 chars)
+[2025-12-01T23:02:35-05:00] [msg-assistant] SKIP: Too short (83 chars)
+[2025-12-01T23:05:07-05:00] [msg-user] RECORDED: User message (338 chars, 31 words, session=3e76a4fe)
+{
+[2025-12-01T23:05:17-05:00] [msg-assistant] SKIP: Too short (22 chars)
+[2025-12-01T23:08:58-05:00] [msg-user] RECORDED: User message (1312 chars, 220 words, session=3e76a4fe)
+{
+[2025-12-01T23:09:10-05:00] [msg-assistant] SKIP: Too short (32 chars)
+[2025-12-01T23:09:39-05:00] [msg-user] RECORDED: User message (85 chars, 17 words, session=3e76a4fe)
+{
+[2025-12-01T23:09:52-05:00] [msg-assistant] RECORDED: Assistant message (217 chars, session=3e76a4fe)
+{
+[2025-12-01T23:10:24-05:00] [msg-user] RECORDED: User message (1852 chars, 318 words, session=3e76a4fe)
+{
+[2025-12-01T23:10:34-05:00] [msg-assistant] RECORDED: Assistant message (143 chars, session=3e76a4fe)
+{
+[2025-12-01T23:10:43-05:00] [msg-user] RECORDED: User message (21 chars, 4 words, session=3e76a4fe)
+{
+[2025-12-01T23:11:03-05:00] [msg-assistant] RECORDED: Assistant message (114 chars, session=3e76a4fe)
+{
+[2025-12-01T23:11:37-05:00] [msg-user] RECORDED: User message (63 chars, 14 words, session=3e76a4fe)
+{
+[2025-12-01T23:11:55-05:00] [msg-assistant] RECORDED: Assistant message (192 chars, session=3e76a4fe)
+{
+[2025-12-01T23:12:40-05:00] [msg-assistant] SKIP: Too short (33 chars)
+[2025-12-01T23:12:54-05:00] [msg-user] SKIP: Too short (10 chars)
+[2025-12-01T23:13:04-05:00] [msg-assistant] SKIP: Too short (45 chars)
+[2025-12-01T23:14:55-05:00] [msg-user] RECORDED: User message (34 chars, 8 words, session=3e76a4fe)
+{
+[2025-12-01T23:15:14-05:00] [msg-assistant] SKIP: Too short (53 chars)
+[2025-12-01T23:17:18-05:00] [msg-user] SKIP: Too few words (1)
+[2025-12-01T23:17:28-05:00] [msg-assistant] SKIP: Too short (41 chars)
+[2025-12-01T23:18:37-05:00] [msg-user] RECORDED: User message (76 chars, 15 words, session=3e76a4fe)
+{
+[2025-12-01T23:18:47-05:00] [msg-assistant] SKIP: Too short (37 chars)
+[2025-12-01T23:20:14-05:00] [msg-assistant] SKIP: Too short (65 chars)
+[2025-12-01T23:22:18-05:00] [msg-user] SKIP: Too short (18 chars)
+[2025-12-01T23:24:12-05:00] [msg-assistant] SKIP: Too short (22 chars)
+[2025-12-01T23:24:23-05:00] [msg-user] SKIP: Too short (9 chars)
+[2025-12-01T23:24:55-05:00] RECORDED: Create: /tmp/test_openai.sh (topic=file-change)
+{
+[2025-12-01T23:25:07-05:00] RECORDED: Create: /tmp/test_openai.sh (topic=file-change)
+{
+[2025-12-01T23:25:29-05:00] [msg-assistant] SKIP: Too short (12 chars)
+[2025-12-01T23:29:29-05:00] [msg-user] RECORDED: User message (657 chars, 67 words, session=3e76a4fe)
+{
+[2025-12-01T23:30:36-05:00] [msg-assistant] SKIP: Too short (26 chars)
+[2025-12-01T23:31:13-05:00] [msg-user] RECORDED: User message (26 chars, 6 words, session=3e76a4fe)
+{
+[2025-12-01T23:31:52-05:00] [msg-assistant] SKIP: Too short (30 chars)
+[2025-12-01T23:32:42-05:00] [msg-assistant] SKIP: Too short (46 chars)
+[2025-12-01T23:33:41-05:00] [msg-assistant] RECORDED: Assistant message (120 chars, session=3e76a4fe)
+{
+[2025-12-01T23:34:58-05:00] [msg-user] RECORDED: User message (56 chars, 10 words, session=3e76a4fe)
+{
+[2025-12-01T23:35:13-05:00] [msg-assistant] SKIP: Too short (51 chars)
+[2025-12-01T23:36:13-05:00] [msg-user] RECORDED: User message (126 chars, 25 words, session=3e76a4fe)
+{
+[2025-12-01T23:38:06-05:00] RECORDED: Create: mem-briefing.py (topic=file-change)
+{
+[2025-12-01T23:38:50-05:00] RECORDED: Create: mem-server.py (topic=file-change)
+{
+[2025-12-01T23:39:11-05:00] RECORDED: Create: hooks/session-start.sh (topic=file-change)
+{
+[2025-12-01T23:39:35-05:00] RECORDED: Edit: CLAUDE.md (topic=docs)
+{
+[2025-12-01T23:42:37-05:00] RECORDED: Create: mem-api.sh (topic=file-change)
+{
+[2025-12-01T23:43:50-05:00] [msg-assistant] SKIP: Too short (3 chars)
+[2025-12-01T23:44:24-05:00] [msg-user] RECORDED: User message (43 chars, 8 words, session=3e76a4fe)
+{
+[2025-12-01T23:45:10-05:00] [msg-assistant] SKIP: Too short (43 chars)
+[2025-12-01T23:58:15-05:00] [msg-user] RECORDED: User message (68 chars, 15 words, session=3e76a4fe)
+{
+[2025-12-01T23:59:25-05:00] [msg-assistant] SKIP: Too short (23 chars)
+[2025-12-01T23:59:47-05:00] [msg-user] RECORDED: User message (43 chars, 9 words, session=3e76a4fe)
+{
+[2025-12-01T23:59:56-05:00] [msg-assistant] SKIP: Too short (19 chars)
+[2025-12-02T00:02:39-05:00] [msg-user] SKIP: Too short (5 chars)
+[2025-12-02T00:04:18-05:00] RECORDED: Create: llm_client.py (topic=file-change)
+{
+[2025-12-02T00:06:33-05:00] RECORDED: Edit: swarm_daemon.py (topic=file-change)
+{
+[2025-12-02T00:06:54-05:00] RECORDED: Edit: swarm_daemon.py (topic=file-change)
+{
+[2025-12-02T00:07:09-05:00] RECORDED: Edit: swarm_daemon.py (topic=file-change)
+{
+[2025-12-02T00:07:19-05:00] RECORDED: Edit: swarm_daemon.py (topic=file-change)
+{
+[2025-12-02T00:07:25-05:00] RECORDED: Edit: swarm_daemon.py (topic=file-change)
+{
+[2025-12-02T00:07:32-05:00] RECORDED: Edit: swarm_daemon.py (topic=file-change)
+{
+[2025-12-02T00:07:50-05:00] RECORDED: Edit: swarm_daemon.py (topic=file-change)
+{
+[2025-12-02T00:07:56-05:00] RECORDED: Edit: swarm_daemon.py (topic=file-change)
+{
+[2025-12-02T00:11:10-05:00] [msg-assistant] SKIP: Too short (3 chars)
+[2025-12-02T00:13:19-05:00] [msg-user] RECORDED: User message (64 chars, 14 words, session=3e76a4fe)
+{
+[2025-12-02T00:13:33-05:00] RECORDED: Edit: llm_client.py (topic=file-change)
+{
+[2025-12-02T00:14:05-05:00] [msg-user] RECORDED: User message (84 chars, 15 words, session=3e76a4fe)
+{
+[2025-12-02T00:15:44-05:00] RECORDED: Create: llm_client.py (topic=file-change)
+{
+[2025-12-02T00:16:54-05:00] [msg-user] RECORDED: User message (68 chars, 12 words, session=3e76a4fe)
+{
+[2025-12-02T00:17:15-05:00] RECORDED: Edit: llm_client.py (topic=file-change)
+{
+[2025-12-02T00:17:31-05:00] RECORDED: Edit: llm_client.py (topic=file-change)
+{
+[2025-12-02T00:19:53-05:00] [msg-user] RECORDED: User message (178 chars, 33 words, session=3e76a4fe)
+{
+[2025-12-02T00:20:12-05:00] RECORDED: Edit: llm_client.py (topic=file-change)
+{
+[2025-12-02T00:20:31-05:00] RECORDED: Edit: llm_client.py (topic=file-change)
+{
+[2025-12-02T00:20:54-05:00] RECORDED: Edit: llm_client.py (topic=file-change)
+{
+[2025-12-02T00:21:04-05:00] RECORDED: Edit: llm_client.py (topic=file-change)
+{
+[2025-12-02T00:21:13-05:00] RECORDED: Edit: llm_client.py (topic=file-change)
+{
+[2025-12-02T00:21:44-05:00] [msg-assistant] SKIP: Too short (62 chars)
+[2025-12-02T00:23:17-05:00] [msg-user] RECORDED: User message (24 chars, 4 words, session=3e76a4fe)
+{
+[2025-12-02T00:23:32-05:00] RECORDED: Edit: llm_client.py (topic=file-change)
+{
+[2025-12-02T00:23:44-05:00] RECORDED: Edit: llm_client.py (topic=file-change)
+{
+[2025-12-02T00:23:56-05:00] RECORDED: Edit: llm_client.py (topic=file-change)
+{
+[2025-12-02T00:24:10-05:00] RECORDED: Edit: llm_client.py (topic=file-change)
+{
+[2025-12-02T00:24:26-05:00] [msg-assistant] SKIP: Too short (44 chars)
+[2025-12-02T00:25:51-05:00] [msg-user] RECORDED: User message (131 chars, 24 words, session=3e76a4fe)
+{
+[2025-12-02T00:27:02-05:00] RECORDED: Create: /tmp/test_tiers.py (topic=file-change)
+{
+[2025-12-02T00:27:22-05:00] [msg-user] RECORDED: User message (28 chars, 6 words, session=5aa11a18)
+{
+[2025-12-02T00:27:25-05:00] [msg-assistant] SKIP: Too short (20 chars)
+[2025-12-02T00:28:27-05:00] RECORDED: Edit: llm_client.py (topic=file-change)
+{
+[2025-12-02T00:29:02-05:00] [msg-user] RECORDED: User message (28 chars, 6 words, session=39fad676)
+{
+[2025-12-02T00:29:05-05:00] [msg-assistant] SKIP: Too short (20 chars)
+[2025-12-02T00:30:02-05:00] [msg-assistant] SKIP: Too short (64 chars)
+[2025-12-02T00:31:11-05:00] [msg-user] RECORDED: User message (244 chars, 40 words, session=3e76a4fe)
+{
+[2025-12-02T00:31:39-05:00] [msg-assistant] SKIP: Could not extract response text
+[2025-12-02T00:33:33-05:00] [msg-user] RECORDED: User message (156 chars, 31 words, session=3e76a4fe)
+{
+[2025-12-02T00:34:26-05:00] [msg-user] RECORDED: User message (117 chars, 19 words, session=3e76a4fe)
+{
+[2025-12-02T00:35:34-05:00] [msg-assistant] SKIP: Too short (18 chars)
+[2025-12-02T00:41:52-05:00] [msg-user] RECORDED: User message (98 chars, 20 words, session=3e76a4fe)
+{
+[2025-12-02T00:42:37-05:00] RECORDED: Edit: mem-server.py (topic=file-change)
+{
+[2025-12-02T00:42:44-05:00] RECORDED: Edit: mem-server.py (topic=file-change)
+{
+[2025-12-02T00:42:55-05:00] RECORDED: Edit: mem-server.py (topic=file-change)
+{
+[2025-12-02T00:43:09-05:00] RECORDED: Edit: CLAUDE.md (topic=docs)
+{
