@@ -8,9 +8,13 @@ daemon.kill
 .claude-tmp/
 .claude.json
 .claude.json.backup
-.claude-tmp/
-.claude/
-.claude.json
-.claude.json.backup
-.claude-tmp/
 .env
+
+# Runtime files
+*.pid
+*.log
+hooks.log
+
+# Test scripts
+factorial.py
+fibonacci.py

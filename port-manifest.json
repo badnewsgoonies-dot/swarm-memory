@@ -1,0 +1,121 @@
+{
+  "meta": {
+    "v1": "/home/geni/Documents/vale-village",
+    "v2": "/home/geni/Documents/vale-village-v2",
+    "created": "2025-12-01",
+    "strategy": "Direct copy pure TS, daemon convert React->Preact"
+  },
+  "phase1_direct_copy": {
+    "description": "Pure TypeScript - no React, copy directly",
+    "dirs": [
+      "src/core/algorithms",
+      "src/core/config",
+      "src/core/constants.ts",
+      "src/core/migrations",
+      "src/core/models",
+      "src/core/random",
+      "src/core/save",
+      "src/core/services",
+      "src/core/utils",
+      "src/core/validation",
+      "src/data/definitions",
+      "src/data/schemas",
+      "src/data/types",
+      "src/story",
+      "src/utils",
+      "src/infra"
+    ]
+  },
+  "phase2_state": {
+    "description": "Zustand state - works with Preact, minor tweaks",
+    "files": [
+      "src/ui/state/store.ts",
+      "src/ui/state/battleSlice.ts",
+      "src/ui/state/queueBattleSlice.ts",
+      "src/ui/state/teamSlice.ts",
+      "src/ui/state/saveSlice.ts",
+      "src/ui/state/storySlice.ts",
+      "src/ui/state/inventorySlice.ts",
+      "src/ui/state/rewardsSlice.ts",
+      "src/ui/state/gameFlowSlice.ts",
+      "src/ui/state/overworldSlice.ts",
+      "src/ui/state/dialogueSlice.ts",
+      "src/ui/state/devModeSlice.ts",
+      "src/ui/state/towerSlice.ts",
+      "src/ui/state/battleConfig.ts"
+    ]
+  },
+  "phase3_components": {
+    "description": "React components - need React->Preact conversion",
+    "priority_high": [
+      "src/ui/components/TitleScreen.tsx",
+      "src/ui/components/MainMenu.tsx",
+      "src/ui/components/OverworldMap.tsx",
+      "src/ui/components/BattleView.tsx",
+      "src/ui/components/DialogueBox.tsx",
+      "src/ui/components/DialogueBoxV2.tsx"
+    ],
+    "priority_medium": [
+      "src/ui/components/QueueBattleView.tsx",
+      "src/ui/components/RewardsScreen.tsx",
+      "src/ui/components/SaveMenu.tsx",
+      "src/ui/components/PauseMenu.tsx",
+      "src/ui/components/PartyManagementScreen.tsx",
+      "src/ui/components/ShopScreen.tsx",
+      "src/ui/components/ShopEquipScreen.tsx"
+    ],
+    "battle_components": [
+      "src/ui/components/battle/Battlefield.tsx",
+      "src/ui/components/battle/BattleLog.tsx",
+      "src/ui/components/battle/BattleOverlay.tsx",
+      "src/ui/components/battle/CommandPanel.tsx",
+      "src/ui/components/battle/AbilityPanel.tsx",
+      "src/ui/components/battle/DjinnPanel.tsx",
+      "src/ui/components/battle/QueuePanel.tsx",
+      "src/ui/components/battle/TurnOrderStrip.tsx",
+      "src/ui/components/battle/UnitCard.tsx",
+      "src/ui/components/battle/SidePanelPlayer.tsx",
+      "src/ui/components/battle/SidePanelEnemy.tsx",
+      "src/ui/components/battle/StatusIcon.tsx",
+      "src/ui/components/battle/LayoutBattle.tsx"
+    ],
+    "ui_primitives": [
+      "src/ui/components/BattleUnitSprite.tsx",
+      "src/ui/components/CritMeter.tsx",
+      "src/ui/components/DjinnBar.tsx",
+      "src/ui/components/ManaCirclesBar.tsx",
+      "src/ui/components/EquipmentIcon.tsx",
+      "src/ui/components/ChapterIndicator.tsx",
+      "src/ui/components/VictoryOverlay.tsx"
+    ]
+  },
+  "phase4_sprites": {
+    "description": "Sprite system - mixed React/TS",
+    "files": [
+      "src/ui/sprites/types.ts",
+      "src/ui/sprites/catalog.ts",
+      "src/ui/sprites/manifest.ts",
+      "src/ui/sprites/loader.ts",
+      "src/ui/sprites/utils.ts",
+      "src/ui/sprites/Sprite.tsx",
+      "src/ui/sprites/SimpleSprite.tsx",
+      "src/ui/sprites/BackgroundSprite.tsx",
+      "src/ui/sprites/ButtonIcon.tsx",
+      "src/ui/sprites/mappings/index.ts",
+      "src/ui/sprites/mappings/abilityIcons.ts",
+      "src/ui/sprites/mappings/battleSprites.ts",
+      "src/ui/sprites/mappings/portraits.ts",
+      "src/ui/sprites/mappings/statusIcons.ts"
+    ]
+  },
+  "conversion_rules": {
+    "imports": {
+      "from 'react'": "from 'preact/hooks'",
+      "from 'react-dom'": "from 'preact'",
+      "React.": "",
+      "className=": "class="
+    },
+    "hooks": "useState, useEffect, useCallback, useMemo, useRef - same API",
+    "zustand": "Works unchanged with preact"
+  }
+}
