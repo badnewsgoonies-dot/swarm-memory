@@ -36,12 +36,629 @@ import time
 import logging
 import shlex
 import hashlib
-from typing import List, Tuple
+import re
+from typing import List, Tuple, Optional, Dict, Any
 from datetime import datetime, timedelta
 from pathlib import Path
 
 # Import governor for action enforcement
 from governor import Governor
+
+
+# =============================================================================
+# ERROR SIGNATURE EXTRACTION
+# =============================================================================
+
+def extract_error_signature(audit_log: str) -> str:
+    """
+    Extract a canonical error signature from audit log output.
+
+    Returns a signature string in format: <category>:<details>
+
+    Categories:
+    - ts:TS<code>:<first line of message> - TypeScript compiler errors
+    - jest:<test name> - Jest/Vitest test failures
+    - runtime:<ErrorType>:<message> - Runtime errors (TypeError, etc.)
+    - human:<metric> - Human-provided metrics like plan_quality=4
+    - unknown:<first line truncated to 80 chars> - Fallback
+    """
+    if not audit_log or not audit_log.strip():
+        return "unknown:empty_audit_log"
+
+    log = audit_log.strip()
+
+    # 1. TypeScript errors: TS(\d+): <message>
+    # Match patterns like "error TS2304: Cannot find name 'foo'"
+    ts_match = re.search(r'(?:error\s+)?(TS\d+):\s*(.+?)(?:\n|$)', log, re.IGNORECASE)
+    if ts_match:
+        ts_code = ts_match.group(1).upper()
+        msg = ts_match.group(2).strip()[:60]  # First 60 chars of message
+        return f"ts:{ts_code}:{msg}"
+
+    # 2. Jest/Vitest test failures: ● <test name> or FAIL <test name>
+    # Match "● TestSuite > test name" or "FAIL src/foo.test.ts"
+    jest_match = re.search(r'(?:●|FAIL)\s+(.+?)(?:\n|$)', log)
+    if jest_match:
+        test_name = jest_match.group(1).strip()[:80]
+        return f"jest:{test_name}"
+
+    # Also check for "✕" (vitest failure marker)
+    vitest_match = re.search(r'[✕✗]\s+(.+?)(?:\n|$)', log)
+    if vitest_match:
+        test_name = vitest_match.group(1).strip()[:80]
+        return f"jest:{test_name}"
+
+    # 3. Runtime errors: TypeError, ReferenceError, etc.
+    # Match "TypeError: Cannot read property 'x' of undefined"
+    runtime_match = re.search(
+        r'(TypeError|ReferenceError|SyntaxError|RangeError|Error|Exception):\s*(.+?)(?:\n|$)',
+        log, re.IGNORECASE
+    )
+    if runtime_match:
+        error_type = runtime_match.group(1)
+        msg = runtime_match.group(2).strip()[:60]
+        return f"runtime:{error_type}:{msg}"
+
+    # 4. Human metrics: plan_quality=N;exec_success=false etc.
+    # Match patterns like "plan_quality=4" or "exec_success=false"
+    human_match = re.search(r'((?:plan_quality|exec_success|audit_score)[=:][^;\s]+(?:;[^;\s]+)*)', log, re.IGNORECASE)
+    if human_match:
+        metric = human_match.group(1).strip()[:80]
+        return f"human:{metric}"
+
+    # 5. ESLint/linting errors
+    lint_match = re.search(r'(\d+:\d+)\s+(error|warning)\s+(.+?)\s+(\S+)$', log, re.MULTILINE)
+    if lint_match:
+        rule = lint_match.group(4)
+        msg = lint_match.group(3).strip()[:40]
+        return f"lint:{rule}:{msg}"
+
+    # 6. Build/compilation errors (generic)
+    build_match = re.search(r'(?:error|failed|failure)[:\s]+(.+?)(?:\n|$)', log, re.IGNORECASE)
+    if build_match:
+        msg = build_match.group(1).strip()[:60]
+        return f"build:{msg}"
+
+    # 7. Fallback: first non-empty line truncated to 80 chars
+    for line in log.split('\n'):
+        line = line.strip()
+        if line and not line.startswith('#'):
+            return f"unknown:{line[:80]}"
+
+    return "unknown:no_parseable_content"
+
+
+# =============================================================================
+# PHASE GLYPH HELPERS
+# =============================================================================
+
+def write_phase_glyph(
+    task_id: str,
+    topic: str,
+    from_phase: str,
+    to_phase: str,
+    round_num: int,
+    error_sig: str,
+    text: str,
+    mem_db_path: Path
+) -> Tuple[str, bool]:
+    """
+    Write a PHASE glyph to memory tracking orchestration phase transition.
+
+    Args:
+        task_id: The TODO/GOAL id being orchestrated
+        topic: Topic for the glyph (usually matches the task's topic)
+        from_phase: Previous phase (IMPLEMENT, AUDIT, FIX)
+        to_phase: New phase (AUDIT, FIX, DONE, BLOCKED)
+        round_num: Current orchestration round
+        error_sig: Error signature from audit (or "none")
+        text: Human-readable description of the transition
+        mem_db_path: Path to mem-db.sh script
+
+    Returns:
+        Tuple of (output, success)
+    """
+    choice = f"{from_phase}->{to_phase}"
+    links_data = {
+        "from": from_phase,
+        "to": to_phase,
+        "round": round_num,
+        "error": error_sig
+    }
+    links_json = json.dumps(links_data)
+
+    try:
+        result = subprocess.run(
+            [
+                str(mem_db_path), "write",
+                "t=P",
+                f"topic={topic}",
+                f"task={task_id}",
+                f"choice={choice}",
+                f"text={text}",
+                f"links={links_json}"
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        return result.stdout.strip(), result.returncode == 0
+    except Exception as e:
+        return str(e), False
+
+
+def query_previous_error_signature(task_id: str, mem_db_path: Path) -> Optional[str]:
+    """
+    Query the most recent PHASE glyph for a task where error is not "none".
+
+    Returns the error signature string, or None if not found.
+    """
+    try:
+        result = subprocess.run(
+            [
+                str(mem_db_path), "query",
+                "t=P",
+                f"task_id={task_id}",
+                "recent=1h",
+                "limit=10",
+                "--json"
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+
+        # Parse JSONL output - each line is an array
+        for line in result.stdout.strip().split('\n'):
+            if not line.strip():
+                continue
+            try:
+                # Query returns array: [type, topic, text, choice, rationale, ts, session, source, ...]
+                # We need to look at the links field which contains the error
+                row = json.loads(line)
+                # The links field is at index 15 in the query output
+                # But actually we need to check the JSON structure
+                # Let's try parsing as a dict if it's returned differently
+                if isinstance(row, dict):
+                    links_str = row.get('links', '')
+                elif isinstance(row, list) and len(row) > 15:
+                    links_str = row[15]  # links field position
+                else:
+                    continue
+
+                if links_str:
+                    links_data = json.loads(links_str) if isinstance(links_str, str) else links_str
+                    error = links_data.get('error', 'none')
+                    if error and error != 'none':
+                        return error
+            except (json.JSONDecodeError, IndexError, TypeError):
+                continue
+
+        return None
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Failed to query previous error: {e}")
+        return None
+
+
+def write_blocked_result(
+    task_id: str,
+    topic: str,
+    blocked_reason: str,
+    error_sig: str,
+    round_num: int,
+    mem_db_path: Path
+) -> None:
+    """
+    Write RESULT (failure) and LESSON glyphs when task is blocked.
+    """
+    logger = logging.getLogger(__name__)
+
+    # Write RESULT glyph with failure
+    try:
+        metric = f"blocked_reason={blocked_reason}:{error_sig}"
+        subprocess.run(
+            [
+                str(mem_db_path), "write",
+                "t=R",
+                f"topic={topic}",
+                f"task={task_id}",
+                "choice=failure",
+                f"text=Task blocked after {round_num} rounds: {blocked_reason}",
+                f"metric={metric}"
+            ],
+            capture_output=True,
+            timeout=60
+        )
+        logger.info(f"Wrote RESULT glyph: blocked_reason={blocked_reason}")
+    except Exception as e:
+        logger.error(f"Failed to write RESULT glyph: {e}")
+
+    # Write LESSON glyph
+    try:
+        if blocked_reason == "repeated_error_signature":
+            lesson_text = (
+                f"Task {task_id} stuck on same error ({error_sig}) for 2+ rounds. "
+                "Likely needs human intervention or different approach. "
+                "Consider: 1) Manual debugging, 2) Simplifying the task, 3) Checking dependencies."
+            )
+        else:  # max_rounds
+            lesson_text = (
+                f"Task {task_id} hit max rounds ({round_num}) with different errors each time. "
+                "May need task breakdown or architectural review. "
+                "Pattern suggests systemic issues rather than simple bugs."
+            )
+
+        subprocess.run(
+            [
+                str(mem_db_path), "write",
+                "t=L",
+                f"topic={topic}",
+                f"task={task_id}",
+                f"text={lesson_text}"
+            ],
+            capture_output=True,
+            timeout=60
+        )
+        logger.info(f"Wrote LESSON glyph for blocked task")
+    except Exception as e:
+        logger.error(f"Failed to write LESSON glyph: {e}")
+
+
+# =============================================================================
+# ORCHESTRATION STATE MACHINE
+# =============================================================================
+
+class OrchestrationState:
+    """
+    Manages orchestration state for IMPLEMENT -> AUDIT -> FIX loops.
+
+    Tracks:
+    - Current phase (implement, audit, fix, done, blocked)
+    - Round count (increments on each FIX)
+    - Error signatures for anti-loop detection
+    - Task metadata
+    """
+
+    MAX_ROUNDS = 5
+
+    def __init__(
+        self,
+        task_id: str,
+        topic: str,
+        objective: str,
+        mem_db_path: Path
+    ):
+        self.task_id = task_id
+        self.topic = topic
+        self.objective = objective
+        self.mem_db_path = mem_db_path
+        self.orch_id = hashlib.md5(objective.encode()).hexdigest()[:8]
+
+        # State
+        self.current_phase = "implement"
+        self.current_round = 1
+        self.last_error_sig: Optional[str] = None
+        self.last_audit_log: Optional[str] = None
+        self.is_blocked = False
+        self.blocked_reason: Optional[str] = None
+
+        self.logger = logging.getLogger(__name__)
+
+    def load_from_memory(self) -> None:
+        """Load current orchestration state from PHASE glyphs in memory."""
+        try:
+            result = subprocess.run(
+                [
+                    str(self.mem_db_path), "query",
+                    "t=P",
+                    f"task_id={self.task_id}",
+                    "recent=2h",
+                    "limit=20",
+                    "--json"
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+
+            if result.returncode != 0 or not result.stdout.strip():
+                self.logger.info(f"No existing PHASE glyphs for task {self.task_id}")
+                return
+
+            # Parse entries to determine current phase and round
+            entries = []
+            for line in result.stdout.strip().split('\n'):
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                    entries.append(row)
+                except json.JSONDecodeError:
+                    continue
+
+            if not entries:
+                return
+
+            # Process entries (newest first) to determine state
+            for row in entries:
+                try:
+                    if isinstance(row, list) and len(row) > 15:
+                        choice = row[3]  # anchor_choice
+                        links_str = row[15]  # links field
+                    elif isinstance(row, dict):
+                        choice = row.get('anchor_choice', '')
+                        links_str = row.get('links', '')
+                    else:
+                        continue
+
+                    # Parse links JSON
+                    if links_str:
+                        links = json.loads(links_str) if isinstance(links_str, str) else links_str
+                        to_phase = links.get('to', '').lower()
+                        round_num = links.get('round', 1)
+                        error = links.get('error', 'none')
+
+                        if to_phase == 'blocked':
+                            self.is_blocked = True
+                            self.blocked_reason = "previous_block"
+                            self.logger.info(f"Task {self.task_id} is already BLOCKED")
+                            return
+
+                        if to_phase == 'done':
+                            self.current_phase = 'done'
+                            self.logger.info(f"Task {self.task_id} is already DONE")
+                            return
+
+                        # Use most recent state
+                        self.current_phase = to_phase if to_phase else 'implement'
+                        self.current_round = round_num
+                        if error and error != 'none':
+                            self.last_error_sig = error
+                        break
+
+                except (json.JSONDecodeError, IndexError, TypeError, KeyError) as e:
+                    self.logger.debug(f"Failed to parse PHASE entry: {e}")
+                    continue
+
+            self.logger.info(
+                f"Loaded orchestration state: phase={self.current_phase}, "
+                f"round={self.current_round}, last_error={self.last_error_sig}"
+            )
+
+        except Exception as e:
+            self.logger.warning(f"Failed to load orchestration state: {e}")
+
+    def transition_implement_to_audit(self) -> bool:
+        """Transition from IMPLEMENT to AUDIT phase."""
+        if self.is_blocked:
+            return False
+
+        output, success = write_phase_glyph(
+            task_id=self.task_id,
+            topic=self.topic,
+            from_phase="IMPLEMENT",
+            to_phase="AUDIT",
+            round_num=self.current_round,
+            error_sig="none",
+            text="Implementation complete; ready for audit.",
+            mem_db_path=self.mem_db_path
+        )
+
+        if success:
+            self.current_phase = "audit"
+            self.logger.info(f"Phase transition: IMPLEMENT -> AUDIT (round {self.current_round})")
+        return success
+
+    def transition_audit_pass(self) -> bool:
+        """Transition from AUDIT to DONE (audit passed)."""
+        if self.is_blocked:
+            return False
+
+        output, success = write_phase_glyph(
+            task_id=self.task_id,
+            topic=self.topic,
+            from_phase="AUDIT",
+            to_phase="DONE",
+            round_num=self.current_round,
+            error_sig="none",
+            text="All tests passed; task complete.",
+            mem_db_path=self.mem_db_path
+        )
+
+        if success:
+            self.current_phase = "done"
+            self.logger.info(f"Phase transition: AUDIT -> DONE (round {self.current_round})")
+        return success
+
+    def transition_audit_fail(self, audit_log: str) -> Tuple[bool, str]:
+        """
+        Process audit failure and decide whether to FIX or BLOCK.
+
+        Returns:
+            Tuple of (can_continue, reason)
+            - (True, "fix") - Can proceed to FIX phase
+            - (False, "repeated_error_signature") - Same error twice, BLOCKED
+            - (False, "max_rounds") - Hit max rounds, BLOCKED
+        """
+        if self.is_blocked:
+            return False, "already_blocked"
+
+        # Extract error signature from audit log
+        new_error_sig = extract_error_signature(audit_log)
+        self.last_audit_log = audit_log
+        self.logger.info(f"Extracted error signature: {new_error_sig}")
+
+        # Check for repeated error signature (anti-loop)
+        prev_error_sig = query_previous_error_signature(self.task_id, self.mem_db_path)
+        self.logger.debug(f"Previous error signature: {prev_error_sig}")
+
+        if prev_error_sig and new_error_sig == prev_error_sig:
+            # Same error twice - BLOCK
+            self.logger.warning(
+                f"Repeated error signature detected: {new_error_sig}. "
+                f"Blocking task {self.task_id}."
+            )
+            self._block_task("repeated_error_signature", new_error_sig)
+            return False, "repeated_error_signature"
+
+        # Check max rounds
+        if self.current_round >= self.MAX_ROUNDS:
+            self.logger.warning(
+                f"Max rounds ({self.MAX_ROUNDS}) reached for task {self.task_id}. "
+                f"Blocking task."
+            )
+            self._block_task("max_rounds", new_error_sig)
+            return False, "max_rounds"
+
+        # Can proceed to FIX
+        text_snippet = new_error_sig[:50]
+        output, success = write_phase_glyph(
+            task_id=self.task_id,
+            topic=self.topic,
+            from_phase="AUDIT",
+            to_phase="FIX",
+            round_num=self.current_round,
+            error_sig=new_error_sig,
+            text=f"Audit failed ({text_snippet}); preparing fix.",
+            mem_db_path=self.mem_db_path
+        )
+
+        if success:
+            self.current_phase = "fix"
+            self.last_error_sig = new_error_sig
+            self.logger.info(
+                f"Phase transition: AUDIT -> FIX (round {self.current_round}, "
+                f"error={new_error_sig[:40]}...)"
+            )
+        return True, "fix"
+
+    def transition_fix_to_audit(self) -> bool:
+        """Transition from FIX to AUDIT phase (increment round)."""
+        if self.is_blocked:
+            return False
+
+        self.current_round += 1
+
+        output, success = write_phase_glyph(
+            task_id=self.task_id,
+            topic=self.topic,
+            from_phase="FIX",
+            to_phase="AUDIT",
+            round_num=self.current_round,
+            error_sig="none",
+            text=f"Fix applied; re-auditing (round {self.current_round}).",
+            mem_db_path=self.mem_db_path
+        )
+
+        if success:
+            self.current_phase = "audit"
+            self.logger.info(f"Phase transition: FIX -> AUDIT (round {self.current_round})")
+        return success
+
+    def _block_task(self, reason: str, error_sig: str) -> None:
+        """Mark task as BLOCKED with appropriate glyphs."""
+        self.is_blocked = True
+        self.blocked_reason = reason
+
+        # Write PHASE glyph for BLOCKED transition
+        write_phase_glyph(
+            task_id=self.task_id,
+            topic=self.topic,
+            from_phase="AUDIT",
+            to_phase="BLOCKED",
+            round_num=self.current_round,
+            error_sig=error_sig,
+            text=f"Task blocked: {reason} ({error_sig[:40]})",
+            mem_db_path=self.mem_db_path
+        )
+
+        # Write RESULT and LESSON glyphs
+        write_blocked_result(
+            task_id=self.task_id,
+            topic=self.topic,
+            blocked_reason=reason,
+            error_sig=error_sig,
+            round_num=self.current_round,
+            mem_db_path=self.mem_db_path
+        )
+
+        self.current_phase = "blocked"
+
+    def get_phase_instructions(self) -> str:
+        """Get LLM instructions for current phase."""
+        if self.is_blocked:
+            return f"""
+TASK IS BLOCKED
+===============
+Reason: {self.blocked_reason}
+Last Error: {self.last_error_sig or 'unknown'}
+Round: {self.current_round}
+
+This task cannot proceed automatically. Return a done action explaining the blockage.
+"""
+
+        if self.current_phase == "done":
+            return """
+TASK IS COMPLETE
+================
+Return a done action with a summary of what was accomplished.
+"""
+
+        if self.current_phase == "implement":
+            return f"""
+PHASE: IMPLEMENT (Round {self.current_round})
+===================
+1. Spawn implementation sub-daemon with wait=true
+2. After it completes, write memory glyph with topic=orch_{self.orch_id} choice=implement_done
+3. Then proceed to AUDIT phase
+"""
+
+        if self.current_phase == "audit":
+            return f"""
+PHASE: AUDIT (Round {self.current_round})
+================
+1. Spawn audit sub-daemon with wait=true (run tests, type-check, lint)
+2. Collect the output for error analysis
+3. If audit passes: transition to DONE
+4. If audit fails: the error will be analyzed for anti-loop detection
+5. Write memory glyph with topic=orch_{self.orch_id} choice=audit:pass or audit:fail
+"""
+
+        if self.current_phase == "fix":
+            return f"""
+PHASE: FIX (Round {self.current_round})
+==============
+Last Error: {self.last_error_sig or 'unknown'}
+
+1. Spawn fix sub-daemon with wait=true targeting the specific error
+2. After fix completes, write memory glyph with topic=orch_{self.orch_id} choice=fix_done
+3. Then proceed to re-AUDIT
+
+WARNING: If the same error appears again, task will be BLOCKED.
+"""
+
+        return "Unknown phase - check orchestration state."
+
+    def to_context_string(self) -> str:
+        """Generate context string for LLM prompt."""
+        return f"""
+ORCHESTRATION MODE ACTIVE
+=========================
+Task ID: {self.task_id}
+Orchestration ID: orch_{self.orch_id}
+Topic: {self.topic}
+Objective: {self.objective}
+Current Phase: {self.current_phase.upper()}
+Current Round: {self.current_round}/{self.MAX_ROUNDS}
+Last Error Signature: {self.last_error_sig or 'none'}
+Status: {'BLOCKED - ' + (self.blocked_reason or '') if self.is_blocked else 'active'}
+
+{self.get_phase_instructions()}
+"""
+
 
 # Configuration
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -498,6 +1115,85 @@ def execute_action(action_data, repo_root: Path, unrestricted: bool):
             logger.warning(f"Failed to parse orch_status entries: {e}")
             return {"success": True, "orch_id": orch_id, "phases": [], "latest": "unknown", "entry_count": 0}
 
+    if action == "orch_transition":
+        # Handle orchestration phase transitions with anti-loop detection
+        task_id = action_data.get("task_id", "")
+        topic = action_data.get("topic", "orchestration")
+        objective = action_data.get("objective", "")
+        transition = action_data.get("transition", "")  # e.g., "implement_done", "audit_pass", "audit_fail", "fix_done"
+        audit_log = action_data.get("audit_log", "")  # Required for audit_fail transition
+
+        if not task_id or not transition:
+            return {"success": False, "error": "task_id and transition required"}
+
+        # Create orchestration state
+        orch = OrchestrationState(
+            task_id=task_id,
+            topic=topic,
+            objective=objective or f"Orchestrated task {task_id}",
+            mem_db_path=MEM_DB
+        )
+        orch.load_from_memory()
+
+        # Handle transitions
+        if transition == "implement_done":
+            success = orch.transition_implement_to_audit()
+            return {
+                "success": success,
+                "phase": orch.current_phase,
+                "round": orch.current_round,
+                "output": f"Transitioned to AUDIT phase (round {orch.current_round})"
+            }
+
+        elif transition == "audit_pass":
+            success = orch.transition_audit_pass()
+            return {
+                "success": success,
+                "phase": orch.current_phase,
+                "round": orch.current_round,
+                "output": "Audit passed, task complete!",
+                "done": True
+            }
+
+        elif transition == "audit_fail":
+            if not audit_log:
+                return {"success": False, "error": "audit_log required for audit_fail transition"}
+
+            can_continue, reason = orch.transition_audit_fail(audit_log)
+
+            if not can_continue:
+                # Task is blocked
+                return {
+                    "success": True,
+                    "phase": "blocked",
+                    "round": orch.current_round,
+                    "blocked": True,
+                    "blocked_reason": reason,
+                    "error_signature": orch.last_error_sig,
+                    "output": f"Task blocked: {reason}. Error: {orch.last_error_sig}"
+                }
+            else:
+                # Proceed to FIX
+                return {
+                    "success": True,
+                    "phase": orch.current_phase,
+                    "round": orch.current_round,
+                    "error_signature": orch.last_error_sig,
+                    "output": f"Transitioned to FIX phase. Error: {orch.last_error_sig}"
+                }
+
+        elif transition == "fix_done":
+            success = orch.transition_fix_to_audit()
+            return {
+                "success": success,
+                "phase": orch.current_phase,
+                "round": orch.current_round,
+                "output": f"Fix complete, re-auditing (round {orch.current_round})"
+            }
+
+        else:
+            return {"success": False, "error": f"Unknown transition: {transition}"}
+
     if action == "list_files":
         rel = action_data.get("path", "")
         target_dir = (repo_root / rel).resolve() if rel else repo_root
@@ -756,63 +1452,58 @@ def build_prompt(state, repo_root: Path, unrestricted: bool, last_results=None):
 
     # Check for orchestration mode
     orch_context = ""
+    orch_state = None
     if state.objective.upper().startswith("ORCHESTRATE:"):
-        # Extract actual objective
+        # Extract actual objective and optional task_id
+        # Format: "ORCHESTRATE: [task_id:XXX] [topic:YYY] objective text"
         actual_objective = state.objective[12:].strip()
 
         # Validate non-empty objective
         if not actual_objective:
             logger.warning("Empty orchestration objective, treating as normal mode")
         else:
-            orch_id = hashlib.md5(actual_objective.encode()).hexdigest()[:8]
+            # Parse optional task_id and topic from objective
+            task_id = None
+            topic = "orchestration"
 
-            # Query current orchestration state
-            orch_result, _ = call_mem_db("query", f"topic=orch_{orch_id}", "t=a", "recent=1h", "limit=10", "--json")
+            # Check for task_id: prefix
+            import re as re_module
+            task_match = re_module.search(r'\[task_id:([^\]]+)\]', actual_objective)
+            if task_match:
+                task_id = task_match.group(1).strip()
+                actual_objective = re_module.sub(r'\[task_id:[^\]]+\]\s*', '', actual_objective)
 
-            # Determine current phase from memory
-            # current_round counts number of audit failures (fix attempts)
-            current_phase = "implement"  # default
-            current_round = 1
-            try:
-                entries = [json.loads(l) for l in orch_result.strip().split('\n') if l.strip()]
-                for e in entries:
-                    choice = e.get("anchor_choice", "")
-                    if "audit:pass" in choice:
-                        current_phase = "done"
-                        break
-                    elif "audit:fail" in choice:
-                        current_phase = "fix"
-                        current_round += 1
-                    elif "fix_done" in choice:
-                        current_phase = "audit"
-                    elif "implement_done" in choice:
-                        current_phase = "audit"
-            except (json.JSONDecodeError, ValueError, KeyError):
-                pass
+            topic_match = re_module.search(r'\[topic:([^\]]+)\]', actual_objective)
+            if topic_match:
+                topic = topic_match.group(1).strip()
+                actual_objective = re_module.sub(r'\[topic:[^\]]+\]\s*', '', actual_objective)
 
-            # Inject orchestration context (only if valid objective)
-            orch_context = f"""
-ORCHESTRATION MODE ACTIVE
-========================
-Orchestration ID: orch_{orch_id}
-Actual Objective: {actual_objective}
-Current Phase: {current_phase}
-Current Round: {current_round}
-Max Rounds: 5
+            # Default task_id from objective hash if not provided
+            if not task_id:
+                task_id = f"orch-{hashlib.md5(actual_objective.encode()).hexdigest()[:8]}"
 
-Recent Orchestration History:
-{orch_result[:2000] if orch_result else '(none)'}
+            # Create orchestration state and load from memory
+            orch_state = OrchestrationState(
+                task_id=task_id,
+                topic=topic,
+                objective=actual_objective,
+                mem_db_path=MEM_DB
+            )
+            orch_state.load_from_memory()
 
-PHASE INSTRUCTIONS:
-- If phase is 'implement': Spawn implementation sub-daemon with wait=true
-- If phase is 'audit': Spawn audit sub-daemon with wait=true
-- If phase is 'fix': Spawn fix sub-daemon based on audit findings
-- If phase is 'done': Return done action with summary
-- If round > 5: Escalate to human
+            # Generate context from orchestration state
+            orch_context = orch_state.to_context_string()
 
-Write a glyph after each phase transition using write_memory with topic=orch_{orch_id}
+            # Add recent PHASE glyph history
+            phase_result, _ = call_mem_db("query", "t=P", f"task_id={task_id}", "recent=2h", "limit=5")
+            if phase_result:
+                orch_context += f"\nRecent PHASE History:\n{phase_result[:1500]}\n"
 
-"""
+            # Log orchestration state for debugging
+            logger.info(
+                f"Orchestration: task={task_id}, phase={orch_state.current_phase}, "
+                f"round={orch_state.current_round}, blocked={orch_state.is_blocked}"
+            )
 
     prompt = f"""OBJECTIVE: {state.objective}
 REPO: {repo_root} | MODE: {mode} | ITERATION: {state.iteration}
@@ -825,7 +1516,7 @@ REPO:
 {repo_context}
 
 ACTIONS:
-write_memory: {{"action":"write_memory","type":"f|d|q|a|n","topic":"...","text":"..."}}
+write_memory: {{"action":"write_memory","type":"f|d|q|a|n|P","topic":"...","text":"..."}}
 read_file: {{"action":"read_file","path":"file.ts","max_bytes":4000}}
 edit_file: {{"action":"edit_file","path":"file.ts","content":"...","reason":"why"}}
 list_files: {{"action":"list_files","path":"src"}}
@@ -833,6 +1524,7 @@ search_text: {{"action":"search_text","query":"TODO","path":"src"}}
 exec: {{"action":"exec","cmd":"pnpm install","cwd":"/path"}}
 spawn_daemon: {{"action":"spawn_daemon","objective":"Sub-task","repo":"/path","max_iterations":10,"wait":false,"timeout":300}}
 orch_status: {{"action":"orch_status","orch_id":"abc123"}}
+orch_transition: {{"action":"orch_transition","task_id":"XXX","transition":"implement_done|audit_pass|audit_fail|fix_done","audit_log":"..."}}
 git_status/git_log/git_diff: {{"action":"git_status"}}
 done: {{"action":"done","summary":"What was accomplished"}}
 
