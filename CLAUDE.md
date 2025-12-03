@@ -118,6 +118,52 @@ Example:
   links='{"from": "IMPLEMENT", "to": "AUDIT", "round": 1, "error": "none"}'
 ```
 
+### TODO Statuses
+
+TODOs (`anchor_type='T'`) use `anchor_choice` as a status field:
+
+| Status | Meaning |
+|--------|---------|
+| `OPEN` | Task is available for work |
+| `IN_PROGRESS` | Task is being actively worked on |
+| `DONE` | Task completed successfully |
+| `BLOCKED` | Task cannot proceed; needs human intervention |
+
+**Commands:**
+```bash
+./mem-todo.sh list                      # Lists all TODOs, BLOCKED shown first
+./mem-todo.sh list --status OPEN        # Only OPEN tasks
+./mem-todo.sh update <id> --status BLOCKED
+./mem-todo.sh block <id>                # Shortcut for --status BLOCKED
+./mem-todo.sh done <id>                 # Shortcut for --status DONE
+```
+
+**BLOCKED convention:**
+When marking a task BLOCKED, agents should also:
+1. Write a RESULT glyph with `choice=failure` and `metric=blocked_reason=<reason>`
+2. Write a LESSON glyph explaining why the task is stuck
+3. Optionally append `(BLOCKED: <reason>)` to the TODO text itself
+
+Example:
+```bash
+# Mark task blocked
+./mem-todo.sh block vv-001
+
+# Log the reason
+./mem-db.sh write t=R topic=port-ui task=vv-001 choice=failure \
+  text="Task blocked: repeated TypeScript error" \
+  metric="blocked_reason=repeated_error_signature:ts:TS2304"
+
+# Log lesson learned
+./mem-db.sh write t=L topic=port-ui task=vv-001 \
+  text="Task vv-001 stuck on TS2304 error for 2 rounds. Needs manual debugging."
+```
+
+**Worker behavior:**
+- Workers (`agent_loop.py`) only pick up `OPEN` tasks
+- Workers will NOT revert a BLOCKED task to OPEN
+- A human or manager must explicitly reopen blocked tasks
+
 ### Other commands
 ```bash
 ./mem-db.sh status                     # Database stats and embedding coverage
