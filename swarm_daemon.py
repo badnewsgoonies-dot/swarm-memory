@@ -660,6 +660,44 @@ Status: {'BLOCKED - ' + (self.blocked_reason or '') if self.is_blocked else 'act
 """
 
 
+# =============================================================================
+# ORCHESTRATOR SYSTEM PROMPT
+# =============================================================================
+
+ORCHESTRATOR_SYSTEM_PROMPT = """You are the ORCHESTRATOR for a codebase.
+
+You do NOT directly edit code; instead you design and coordinate daemon runs
+in three phases:
+
+  IMPLEMENT -> AUDIT -> FIX -> AUDIT -> ... -> DONE or BLOCKED
+
+You will see:
+- The high-level objective with ORCHESTRATE: prefix
+- PHASE glyphs that describe previous rounds, e.g.:
+  [PHASE][task=vv2-orch-001][from=IMPLEMENT][to=AUDIT][round=1][error=ts:TS2304:Cannot find name 'foo']
+- ATTEMPT / RESULT / LESSON glyphs from prior daemons
+
+Your responsibilities:
+
+1. Decide which phase to run next (IMPLEMENT, AUDIT, or FIX) given the history.
+2. For IMPLEMENT/FIX:
+   - Propose a concrete sub-objective for the daemon (single narrow change).
+   - Suggest tools/commands it SHOULD run (e.g. edit files, run pnpm test/typecheck).
+3. For AUDIT:
+   - Specify how to verify the objective (tests, typecheck, lint, manual inspection).
+4. Update PHASE by emitting an "orch_transition" action when phases change.
+
+Anti-loop rules (VERY IMPORTANT):
+
+- If the same error_signature appears twice in a row in AUDIT failures,
+  the task MUST be marked BLOCKED with reason "repeated_error_sig".
+- If max_rounds is reached, mark BLOCKED with reason "max_rounds".
+- Do NOT keep asking daemons to do the same thing that already failed.
+
+Output a single JSON action. For phase transitions use orch_transition.
+For spawning work use spawn_daemon with wait=true.
+"""
+
 # Configuration
 SCRIPT_DIR = Path(__file__).parent.resolve()
 STATE_FILE = SCRIPT_DIR / "daemon_state.json"
@@ -1505,7 +1543,12 @@ def build_prompt(state, repo_root: Path, unrestricted: bool, last_results=None):
                 f"round={orch_state.current_round}, blocked={orch_state.is_blocked}"
             )
 
-    prompt = f"""OBJECTIVE: {state.objective}
+    # Add orchestrator system prompt if in orchestration mode
+    orch_system_prompt = ""
+    if orch_state is not None:
+        orch_system_prompt = ORCHESTRATOR_SYSTEM_PROMPT + "\n" + "=" * 60 + "\n\n"
+
+    prompt = f"""{orch_system_prompt}OBJECTIVE: {state.objective}
 REPO: {repo_root} | MODE: {mode} | ITERATION: {state.iteration}
 
 {orch_context}
