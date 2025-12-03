@@ -13,6 +13,50 @@
 - Prompt helpers: `./head-with-memory.sh --dry-run "Summarize memory health"` shows what would be injected.
 - Cleanup/maintenance: `./mem-db.sh consolidate --recent` and `./mem-db.sh prune 30` to manage superseded/old chunks.
 
+## TODO Status Conventions
+
+TODOs use `anchor_choice` for status tracking:
+- **OPEN**: Ready to be picked up by a worker
+- **IN_PROGRESS**: Currently being worked on
+- **DONE**: Completed successfully
+- **BLOCKED**: Cannot proceed automatically; needs human help
+
+### When to mark BLOCKED
+- Same error signature appears twice in audit cycles (anti-loop triggered)
+- Maximum orchestration rounds (5) reached without success
+- Missing dependencies or information that can't be resolved automatically
+- Worker explicitly determines task is stuck
+
+### BLOCKED logging convention
+When setting status to BLOCKED, agents MUST also log a reason:
+
+1. **RESULT glyph** with failure metric:
+   ```bash
+   ./mem-db.sh write t=R topic=<topic> task=<id> choice=failure \
+     text="Task blocked: <reason>" \
+     metric="blocked_reason=<category>:<signature>"
+   ```
+
+   Categories: `repeated_error_signature`, `max_rounds`, `missing_info`, `human_escalation`
+
+2. **LESSON glyph** explaining the blockage:
+   ```bash
+   ./mem-db.sh write t=L topic=<topic> task=<id> \
+     text="Task <id> blocked because <explanation>. Consider: <suggestions>"
+   ```
+
+3. **PHASE glyph** if using orchestration:
+   ```bash
+   ./mem-db.sh write t=P topic=<topic> task=<id> \
+     choice="AUDIT->BLOCKED" \
+     links='{"from":"AUDIT","to":"BLOCKED","round":N,"error":"<sig>"}'
+   ```
+
+### Worker behavior
+- `find_open_todo()` only picks up `anchor_choice='OPEN'` tasks
+- Workers set status to BLOCKED on failure, never revert BLOCKED to OPEN
+- Only humans or manager agents with explicit intent may reopen blocked tasks
+
 ## Coding Style & Naming Conventions
 - Python: PEP 8, 4-space indents, argparse-based CLIs with docstrings; prefer pure functions and explicit error messages. Keep embeddings model metadata (`embedding_model`, `embedding_dim`) consistent with `MODELS` in `mem-embed.py`.
 - Bash: `set -euo pipefail`, lowercase functions, quote variables, and accept filters as `key=value` to match `mem-search.sh`/`mem-db.sh`.

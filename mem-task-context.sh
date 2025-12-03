@@ -10,7 +10,7 @@
 #   Looks up a TODO by its ID, then gathers related memory entries:
 #   - The TODO itself
 #   - Recent FACTs, NOTEs, DECISIONs with the same topic
-#   - ATTEMPTs, RESULTs, LESSONs linked to that task_id
+#   - ATTEMPTs, RESULTs, LESSONs, PHASEs linked to that task_id
 #
 #   Output is a compact, LLM-friendly text block (one line per entry).
 #
@@ -100,12 +100,12 @@ def type_label(t):
     """Convert type code to display label."""
     return {
         'd': 'DECISION', 'q': 'QUESTION', 'a': 'ACTION', 'f': 'FACT', 'n': 'NOTE', 'c': 'CONV',
-        'T': 'TODO', 'G': 'GOAL', 'M': 'ATTEMPT', 'R': 'RESULT', 'L': 'LESSON'
+        'T': 'TODO', 'G': 'GOAL', 'M': 'ATTEMPT', 'R': 'RESULT', 'L': 'LESSON', 'P': 'PHASE'
     }.get(t, t or '?')
 
 def format_entry(row, is_todo=False):
     """Format a single entry as a compact glyph line."""
-    anchor_type, topic, text, choice, ts, task_link, metric = row
+    anchor_type, topic, text, choice, ts, task_link, metric, links = row
 
     label = type_label(anchor_type)
     topic_str = topic or "general"
@@ -123,10 +123,25 @@ def format_entry(row, is_todo=False):
         parts.append(f"[success={'true' if choice == 'success' else 'false'}]")
     elif anchor_type == 'd' and choice:
         parts.append(f"[choice={choice}]")
-    if task_link and anchor_type in ['M', 'R', 'L']:
+    if task_link and anchor_type in ['M', 'R', 'L', 'P']:
         parts.append(f"[task={task_link}]")
     if metric:
         parts.append(f"[metric={metric}]")
+
+    # Special handling for PHASE entries: parse links JSON for from/to/round/error
+    if anchor_type == 'P' and links:
+        try:
+            link_data = json.loads(links)
+            from_phase = link_data.get('from', '?')
+            to_phase = link_data.get('to', '?')
+            round_num = link_data.get('round', '?')
+            error_sig = link_data.get('error', 'none')
+            parts.append(f"[from={from_phase}]")
+            parts.append(f"[to={to_phase}]")
+            parts.append(f"[round={round_num}]")
+            parts.append(f"[error={error_sig}]")
+        except (json.JSONDecodeError, TypeError):
+            pass
 
     # Clean text (single line)
     content = (text or "").replace('\n', ' ').strip()
@@ -155,19 +170,19 @@ if not todo_row:
 db_id, todo_type, topic, text, status, ts, links = todo_row
 
 # Output the TODO itself first
-todo_entry = (todo_type, topic, text, status, ts, None, None)
+todo_entry = (todo_type, topic, text, status, ts, None, None, None)
 print(format_entry(todo_entry, is_todo=True))
 
 # Step 2: Find related entries
-# - Same topic: recent FACTs, NOTEs, DECISIONs, SUMMARYs
-# - task_id link: ATTEMPTs, RESULTs, LESSONs
+# - Same topic: recent FACTs, NOTEs, DECISIONs, ACTIONs
+# - task_id link: ATTEMPTs, RESULTs, LESSONs, PHASEs
 
 results = []
 
 # Query by topic (excluding the TODO itself)
 if topic:
     cursor.execute("""
-    SELECT anchor_type, anchor_topic, text, anchor_choice, timestamp, task_id, metric
+    SELECT anchor_type, anchor_topic, text, anchor_choice, timestamp, task_id, metric, links
     FROM chunks
     WHERE anchor_topic = ?
       AND anchor_type IN ('d', 'f', 'n', 'a')
@@ -177,12 +192,12 @@ if topic:
     """, (topic, db_id, limit))
     results.extend(cursor.fetchall())
 
-# Query by task_id (ATTEMPTs, RESULTs, LESSONs)
+# Query by task_id (ATTEMPTs, RESULTs, LESSONs, PHASEs)
 cursor.execute("""
-SELECT anchor_type, anchor_topic, text, anchor_choice, timestamp, task_id, metric
+SELECT anchor_type, anchor_topic, text, anchor_choice, timestamp, task_id, metric, links
 FROM chunks
 WHERE task_id = ?
-  AND anchor_type IN ('M', 'R', 'L')
+  AND anchor_type IN ('M', 'R', 'L', 'P')
 ORDER BY timestamp DESC
 LIMIT ?
 """, (task_id, limit))

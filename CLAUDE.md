@@ -83,6 +83,8 @@ curl -X POST http://10.0.0.X:8765/llm \
 ```
 
 ### Types
+
+**Core types (lowercase):**
 | Type | Letter | Use for |
 |------|--------|---------|
 | Decision | `d` | Choices made, with rationale |
@@ -91,6 +93,76 @@ curl -X POST http://10.0.0.X:8765/llm \
 | Action | `a` | Things done |
 | Note | `n` | General notes |
 | Conversation | `c` | Chat messages (auto-captured) |
+
+**Task-centric types (uppercase):**
+| Type | Letter | Use for |
+|------|--------|---------|
+| Todo | `T` | Tasks to be done |
+| Goal | `G` | High-level objectives |
+| Attempt | `M` | Work attempts on a task |
+| Result | `R` | Outcomes of attempts |
+| Lesson | `L` | Learnings from attempts |
+| Phase | `P` | Orchestrator phase transitions |
+
+**PHASE glyph details:**
+- `anchor_choice` = transition label (e.g., `IMPLEMENT->AUDIT`, `AUDIT->FIX`)
+- `task_id` = the TODO/GOAL id (e.g., `vv2-001`, `port-003`)
+- `links` = JSON: `{"from": "<phase>", "to": "<phase>", "round": <int>, "error": "<error_signature or 'none'>"}`
+- Use `task=<id>` as a convenient alias for `task_id=<id>`
+
+Example:
+```bash
+./mem-db.sh write t=P topic=port-ui task=vv2-001 \
+  choice="IMPLEMENT->AUDIT" \
+  text="First implementation ready for audit" \
+  links='{"from": "IMPLEMENT", "to": "AUDIT", "round": 1, "error": "none"}'
+```
+
+### TODO Statuses
+
+TODOs (`anchor_type='T'`) use `anchor_choice` as a status field:
+
+| Status | Meaning |
+|--------|---------|
+| `OPEN` | Task is available for work |
+| `IN_PROGRESS` | Task is being actively worked on |
+| `DONE` | Task completed successfully |
+| `BLOCKED` | Task cannot proceed; needs human intervention |
+
+**Commands:**
+```bash
+./mem-todo.sh list                      # Lists all TODOs, BLOCKED shown first
+./mem-todo.sh list --status OPEN        # Only OPEN tasks
+./mem-todo.sh update <id> --status BLOCKED
+./mem-todo.sh block <id>                # Shortcut for --status BLOCKED
+./mem-todo.sh done <id>                 # Shortcut for --status DONE
+```
+
+**BLOCKED convention:**
+When marking a task BLOCKED, agents should also:
+1. Write a RESULT glyph with `choice=failure` and `metric=blocked_reason=<reason>`
+2. Write a LESSON glyph explaining why the task is stuck
+3. Optionally append `(BLOCKED: <reason>)` to the TODO text itself
+
+Example:
+```bash
+# Mark task blocked
+./mem-todo.sh block vv-001
+
+# Log the reason
+./mem-db.sh write t=R topic=port-ui task=vv-001 choice=failure \
+  text="Task blocked: repeated TypeScript error" \
+  metric="blocked_reason=repeated_error_signature:ts:TS2304"
+
+# Log lesson learned
+./mem-db.sh write t=L topic=port-ui task=vv-001 \
+  text="Task vv-001 stuck on TS2304 error for 2 rounds. Needs manual debugging."
+```
+
+**Worker behavior:**
+- Workers (`agent_loop.py`) only pick up `OPEN` tasks
+- Workers will NOT revert a BLOCKED task to OPEN
+- A human or manager must explicitly reopen blocked tasks
 
 ### Other commands
 ```bash

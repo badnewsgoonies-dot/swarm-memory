@@ -24,7 +24,7 @@
 #   ./mem-db.sh health                # Show health dashboard with diagnostics
 #
 # Query filters (same syntax as mem-search.sh):
-#   t=d              # type = decision (d/q/a/f/n/c or T/G/M/R/L for task types)
+#   t=d              # type = decision (d/q/a/f/n/c, T/G/M/R/L for task types, or P for phase)
 #   topic=memory     # exact topic match
 #   task_id=vv-001   # filter by linked task ID (for attempts/results/lessons)
 #   text=keyword     # text contains keyword (case-insensitive)
@@ -55,7 +55,7 @@
 #
 # Write parameters:
 #   Required:
-#     t=<type>          # Core: d/q/a/f/n/c | Task: T/G/M/R/L (todo/goal/attempt/result/lesson)
+#     t=<type>          # Core: d/q/a/f/n/c | Task: T/G/M/R/L | Phase: P
 #     text=<content>    # The main text content
 #   Optional:
 #     topic=<topic>     # Category/topic (use as project tag for tasks)
@@ -64,7 +64,8 @@
 #     importance=<h|m|l> # Importance flag for prioritization (H/M/L)
 #     due=<ISO date>     # Due date or deadline hint
 #     links=<json/url>   # Related URLs or references
-#     task_id=<id>       # Links ATTEMPT/RESULT/LESSON to a TODO/GOAL id
+#     task_id=<id>       # Links ATTEMPT/RESULT/LESSON/PHASE to a TODO/GOAL id
+#     task=<id>          # Alias for task_id
 #     metric=<string>    # Numeric metric for RESULT (e.g., "tests_passed=12/12")
 #     scope=<scope>     # shared/chat/agent/team (default: shared)
 #     chat_id=<id>      # Chat identifier
@@ -383,7 +384,8 @@ type_map = {
     'G': 'goals',
     'M': 'attempts',
     'R': 'results',
-    'L': 'lessons'
+    'L': 'lessons',
+    'P': 'phases'
 }
 
 if type_counts:
@@ -494,6 +496,7 @@ def format_relative_time(ts_str):
 # Type abbreviation expansion
 # Core types: d/q/a/f/n/c (decision/question/action/fact/note/conversation)
 # Task types: T/G/M/R/L (todo/goal/attempt/result/lesson) - uppercase to distinguish
+# Phase type: P (phase transition)
 def expand_type(t):
     type_map = {
         'd': 'd', 'decision': 'd',
@@ -507,7 +510,8 @@ def expand_type(t):
         'g': 'G', 'goal': 'G',
         'm': 'M', 'attempt': 'M',
         'r': 'R', 'result': 'R',
-        'l': 'L', 'lesson': 'L'
+        'l': 'L', 'lesson': 'L',
+        'p': 'P', 'phase': 'P'
     }
     return type_map.get(t.lower(), t)
 
@@ -639,7 +643,8 @@ else:
         'G': 'GOAL',
         'M': 'ATTEMPT',
         'R': 'RESULT',
-        'L': 'LESSON'
+        'L': 'LESSON',
+        'P': 'PHASE'
     }
 
     for row in results:
@@ -665,9 +670,22 @@ else:
                 print(f"  \033[34mMetric:\033[0m {metric}")
         elif choice:
             print(f"  \033[32mChoice:\033[0m {choice}")
-        # Show task_id link for ATTEMPT/RESULT/LESSON
-        if task_id and anchor_type in ['M', 'R', 'L']:
+        # Show task_id link for ATTEMPT/RESULT/LESSON/PHASE
+        if task_id and anchor_type in ['M', 'R', 'L', 'P']:
             print(f"  \033[35mTask:\033[0m {task_id}")
+        # Show phase transition details for PHASE
+        if anchor_type == 'P' and links:
+            try:
+                import json as j
+                link_data = j.loads(links)
+                if 'from' in link_data and 'to' in link_data:
+                    from_phase = link_data.get('from', '?')
+                    to_phase = link_data.get('to', '?')
+                    round_num = link_data.get('round', '?')
+                    error_sig = link_data.get('error', 'none')
+                    print(f"  \033[34mTransition:\033[0m {from_phase} -> {to_phase} (round={round_num}, error={error_sig})")
+            except:
+                pass
         ts_rel, is_fresh = format_relative_time(ts)
         fresh_marker = " \033[1;92m[FRESH]\033[0m" if is_fresh else ""
         meta_parts = [ts_rel + fresh_marker, session]
@@ -709,6 +727,7 @@ params_raw = sys.argv[3:]
 # Type abbreviation expansion
 # Core types: d/q/a/f/n/c (decision/question/action/fact/note/conversation)
 # Task types: T/G/M/R/L (todo/goal/attempt/result/lesson) - uppercase to distinguish
+# Phase type: P (phase transition)
 def expand_type(t):
     type_map = {
         'd': 'd', 'decision': 'd',
@@ -722,7 +741,8 @@ def expand_type(t):
         'g': 'G', 'goal': 'G',
         'm': 'M', 'attempt': 'M',
         'r': 'R', 'result': 'R',
-        'l': 'L', 'lesson': 'L'
+        'l': 'L', 'lesson': 'L',
+        'p': 'P', 'phase': 'P'
     }
     return type_map.get(t.lower(), t)
 
@@ -747,9 +767,9 @@ if 'text' not in params:
 
 # Extract and validate type
 entry_type = expand_type(params.get('t') or params.get('type'))
-valid_types = ['d', 'q', 'a', 'f', 'n', 'c', 'T', 'G', 'M', 'R', 'L']
+valid_types = ['d', 'q', 'a', 'f', 'n', 'c', 'T', 'G', 'M', 'R', 'L', 'P']
 if entry_type not in valid_types:
-    print(f"ERROR: Invalid type '{entry_type}'. Must be d/q/a/f/n/c or T/G/M/R/L", file=sys.stderr)
+    print(f"ERROR: Invalid type '{entry_type}'. Must be d/q/a/f/n/c, T/G/M/R/L, or P", file=sys.stderr)
     sys.exit(1)
 
 # Generate timestamp
@@ -780,7 +800,7 @@ entry = {
     'project_id': params.get('project'),
     'source_line': None,
     # Task-centric fields
-    'task_id': params.get('task_id'),
+    'task_id': params.get('task_id') or params.get('task'),  # task= is alias for task_id
     'metric': params.get('metric')
 }
 
@@ -1106,6 +1126,7 @@ def format_relative_time(ts_str):
 # Type abbreviation expansion
 # Core types: d/q/a/f/n/c (decision/question/action/fact/note/conversation)
 # Task types: T/G/M/R/L (todo/goal/attempt/result/lesson) - uppercase to distinguish
+# Phase type: P (phase transition)
 def expand_type(t):
     type_map = {
         'd': 'd', 'decision': 'd',
@@ -1119,7 +1140,8 @@ def expand_type(t):
         'g': 'G', 'goal': 'G',
         'm': 'M', 'attempt': 'M',
         'r': 'R', 'result': 'R',
-        'l': 'L', 'lesson': 'L'
+        'l': 'L', 'lesson': 'L',
+        'p': 'P', 'phase': 'P'
     }
     return type_map.get(t.lower(), t)
 
@@ -1127,7 +1149,7 @@ def expand_type(t):
 def type_label(t):
     return {
         'd': 'D', 'q': 'Q', 'a': 'A', 'f': 'F', 'n': 'N', 'c': 'C',
-        'T': 'T', 'G': 'G', 'M': 'M', 'R': 'R', 'L': 'L'
+        'T': 'T', 'G': 'G', 'M': 'M', 'R': 'R', 'L': 'L', 'P': 'P'
     }.get(t, '?')
 
 # Parse filters
@@ -1328,7 +1350,8 @@ type_map = {
     'G': 'goals',
     'M': 'attempts',
     'R': 'results',
-    'L': 'lessons'
+    'L': 'lessons',
+    'P': 'phases'
 }
 
 type_breakdown = []
