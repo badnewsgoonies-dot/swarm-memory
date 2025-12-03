@@ -2,6 +2,24 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Session Startup - DO THIS FIRST
+
+**Every new session, run the briefing to get context:**
+```bash
+python3 ./mem-briefing.py
+```
+
+This generates a summary of:
+- Recent decisions (24h)
+- Infrastructure state (Ollama, APIs, etc.)
+- Open questions
+- Recent actions
+
+If user says "resume" or "what were we doing", query recent memory:
+```bash
+./mem-db.sh query recent=2h limit=10
+```
+
 ## Memory System Overview
 
 This is a shared memory database for maintaining context across chat sessions. The system stores decisions, facts, questions, actions, and notes in a SQLite database with vector embeddings for semantic search.
@@ -14,6 +32,38 @@ The answer is likely already stored. Only explore code if memory doesn't have it
 - Launch Explore agents for questions about this project's own setup
 - Read source files to answer questions about past decisions
 
+## Cross-Machine Access (API Server)
+
+Memory can be accessed from other machines via HTTP API:
+
+**Start server (on Linux box):**
+```bash
+python3 ./mem-server.py --port 8765 --host 0.0.0.0
+```
+
+**Access from Windows or other machines:**
+```bash
+# Health check
+curl http://10.0.0.X:8765/health
+
+# Get briefing
+curl http://10.0.0.X:8765/briefing
+
+# Query memories
+curl "http://10.0.0.X:8765/query?t=d&limit=5"
+
+# Write memory
+curl -X POST http://10.0.0.X:8765/write \
+  -H "Content-Type: application/json" \
+  -d '{"type": "f", "topic": "test", "text": "Testing from Windows"}'
+
+# LLM proxy (call LLMs through Linux without local API key)
+curl -X POST http://10.0.0.X:8765/llm \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Say hello", "tier": "fast"}'
+# Tiers: fast, code, smart, claude, codex, max
+```
+
 ## Quick Reference
 
 ### Query memory
@@ -21,6 +71,7 @@ The answer is likely already stored. Only explore code if memory doesn't have it
 ./mem-db.sh query t=d limit=5          # Recent decisions
 ./mem-db.sh query topic=<topic>        # By topic
 ./mem-db.sh query text=<keyword>       # Keyword search
+./mem-db.sh query recent=1h            # Last hour
 ./mem-db.sh semantic "search query"    # Semantic search with embeddings
 ```
 
