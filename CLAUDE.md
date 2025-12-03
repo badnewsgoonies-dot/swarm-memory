@@ -83,6 +83,8 @@ curl -X POST http://10.0.0.X:8765/llm \
 ```
 
 ### Types
+
+**Core types (lowercase):**
 | Type | Letter | Use for |
 |------|--------|---------|
 | Decision | `d` | Choices made, with rationale |
@@ -91,6 +93,30 @@ curl -X POST http://10.0.0.X:8765/llm \
 | Action | `a` | Things done |
 | Note | `n` | General notes |
 | Conversation | `c` | Chat messages (auto-captured) |
+
+**Task-centric types (uppercase):**
+| Type | Letter | Use for |
+|------|--------|---------|
+| Todo | `T` | Tasks to be done |
+| Goal | `G` | High-level objectives |
+| Attempt | `M` | Work attempts on a task |
+| Result | `R` | Outcomes of attempts |
+| Lesson | `L` | Learnings from attempts |
+| Phase | `P` | Orchestrator phase transitions |
+
+**PHASE glyph details:**
+- `anchor_choice` = transition label (e.g., `IMPLEMENT->AUDIT`, `AUDIT->FIX`)
+- `task_id` = the TODO/GOAL id (e.g., `vv2-001`, `port-003`)
+- `links` = JSON: `{"from": "<phase>", "to": "<phase>", "round": <int>, "error": "<error_signature or 'none'>"}`
+- Use `task=<id>` as a convenient alias for `task_id=<id>`
+
+Example:
+```bash
+./mem-db.sh write t=P topic=port-ui task=vv2-001 \
+  choice="IMPLEMENT->AUDIT" \
+  text="First implementation ready for audit" \
+  links='{"from": "IMPLEMENT", "to": "AUDIT", "round": 1, "error": "none"}'
+```
 
 ### Other commands
 ```bash
