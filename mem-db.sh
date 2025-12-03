@@ -24,8 +24,9 @@
 #   ./mem-db.sh health                # Show health dashboard with diagnostics
 #
 # Query filters (same syntax as mem-search.sh):
-#   t=d              # type = decision (d/q/a/f/n)
+#   t=d              # type = decision (d/q/a/f/n/c or T/G/M/R/L for task types)
 #   topic=memory     # exact topic match
+#   task_id=vv-001   # filter by linked task ID (for attempts/results/lessons)
 #   text=keyword     # text contains keyword (case-insensitive)
 #   session=name     # exact session match
 #   source=claude    # exact source match
@@ -54,12 +55,17 @@
 #
 # Write parameters:
 #   Required:
-#     t=<type>          # d/q/a/f/n (decision/question/action/fact/note)
+#     t=<type>          # Core: d/q/a/f/n/c | Task: T/G/M/R/L (todo/goal/attempt/result/lesson)
 #     text=<content>    # The main text content
 #   Optional:
-#     topic=<topic>     # Category/topic
-#     choice=<choice>   # For decisions
+#     topic=<topic>     # Category/topic (use as project tag for tasks)
+#     choice=<choice>   # For decisions, TODO status (OPEN/IN_PROGRESS/DONE/BLOCKED), or RESULT success
 #     rationale=<rationale>  # Why this choice
+#     importance=<h|m|l> # Importance flag for prioritization (H/M/L)
+#     due=<ISO date>     # Due date or deadline hint
+#     links=<json/url>   # Related URLs or references
+#     task_id=<id>       # Links ATTEMPT/RESULT/LESSON to a TODO/GOAL id
+#     metric=<string>    # Numeric metric for RESULT (e.g., "tests_passed=12/12")
 #     scope=<scope>     # shared/chat/agent/team (default: shared)
 #     chat_id=<id>      # Chat identifier
 #     role=<role>       # Agent role
@@ -117,6 +123,9 @@ CREATE TABLE IF NOT EXISTS chunks (
     anchor_rationale TEXT,
     anchor_session TEXT,
     anchor_source TEXT,
+    importance TEXT,
+    due TEXT,
+    links TEXT,
     source_line INTEGER,
     created_at TEXT DEFAULT (datetime('now')),
     -- Multi-chat fields (Phase 3)
@@ -142,6 +151,8 @@ cursor.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON chunks(timestamp)")
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_scope ON chunks(scope)")
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_id ON chunks(chat_id)")
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_visibility ON chunks(visibility)")
+cursor.execute("CREATE INDEX IF NOT EXISTS idx_due ON chunks(due)")
+cursor.execute("CREATE INDEX IF NOT EXISTS idx_due ON chunks(due)")
 
 # Pending changes and audit log (governor)
 cursor.execute("""
@@ -205,12 +216,18 @@ columns_to_add = [
     ("agent_role", "TEXT"),
     ("visibility", "TEXT DEFAULT 'public'"),
     ("project_id", "TEXT"),
+    ("importance", "TEXT"),
+    ("due", "TEXT"),
+    ("links", "TEXT"),
     ("embedding", "BLOB"),
     ("embedding_model", "TEXT"),
     ("embedding_dim", "INTEGER"),
     ("status", "TEXT DEFAULT 'active'"),
     ("superseded_by", "INTEGER"),
-    ("superseded_at", "TEXT")
+    ("superseded_at", "TEXT"),
+    # Task-centric glyph fields (Phase 1)
+    ("task_id", "TEXT"),       # Links ATTEMPT/RESULT/LESSON to a TODO/GOAL id
+    ("metric", "TEXT")         # Numeric metric for RESULT (e.g., "tests_passed=12/12")
 ]
 
 added_columns = []
@@ -226,6 +243,8 @@ for col_name, col_def in columns_to_add:
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_scope ON chunks(scope)")
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_id ON chunks(chat_id)")
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_visibility ON chunks(visibility)")
+cursor.execute("CREATE INDEX IF NOT EXISTS idx_due ON chunks(due)")
+cursor.execute("CREATE INDEX IF NOT EXISTS idx_task_id ON chunks(task_id)")
 
 # Create topic_index table for hierarchical retrieval
 cursor.execute("""
@@ -271,7 +290,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
 print("Created audit_log table (if not exists)")
 
 if added_columns:
-    print(f"Created indexes: idx_scope, idx_chat_id, idx_visibility")
+    print(f"Created indexes: idx_scope, idx_chat_id, idx_visibility, idx_due")
 else:
     print("All indexes already exist")
 
@@ -358,7 +377,13 @@ type_map = {
     'a': 'actions',
     'f': 'facts',
     'n': 'notes',
-    'c': 'conversations'
+    'c': 'conversations',
+    # Task-centric types
+    'T': 'todos',
+    'G': 'goals',
+    'M': 'attempts',
+    'R': 'results',
+    'L': 'lessons'
 }
 
 if type_counts:
@@ -467,6 +492,8 @@ def format_relative_time(ts_str):
         return (ts_str[:10], False)
 
 # Type abbreviation expansion
+# Core types: d/q/a/f/n/c (decision/question/action/fact/note/conversation)
+# Task types: T/G/M/R/L (todo/goal/attempt/result/lesson) - uppercase to distinguish
 def expand_type(t):
     type_map = {
         'd': 'd', 'decision': 'd',
@@ -474,7 +501,13 @@ def expand_type(t):
         'a': 'a', 'action': 'a',
         'f': 'f', 'fact': 'f',
         'n': 'n', 'note': 'n',
-        'c': 'c', 'conversation': 'c'
+        'c': 'c', 'conversation': 'c',
+        # Task-centric types (uppercase)
+        't': 'T', 'todo': 'T',
+        'g': 'G', 'goal': 'G',
+        'm': 'M', 'attempt': 'M',
+        'r': 'R', 'result': 'R',
+        'l': 'L', 'lesson': 'L'
     }
     return type_map.get(t.lower(), t)
 
@@ -542,6 +575,9 @@ for f in filters:
         cutoff = datetime.now(timezone.utc) - delta_map[unit]
         params['since'] = cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')
         where_clauses.append("timestamp >= :since")
+    elif key == 'task_id':
+        params['task_id'] = val
+        where_clauses.append("task_id = :task_id")
     elif key == 'limit':
         limit = int(val)
 
@@ -560,7 +596,12 @@ SELECT
     chat_id,
     agent_role,
     visibility,
-    project_id
+    project_id,
+    importance,
+    due,
+    links,
+    task_id,
+    metric
 FROM chunks
 """
 
@@ -592,11 +633,17 @@ else:
         'a': 'ACTION',
         'f': 'FACT',
         'n': 'NOTE',
-        'c': 'CONVERSATION'
+        'c': 'CONVERSATION',
+        # Task-centric types
+        'T': 'TODO',
+        'G': 'GOAL',
+        'M': 'ATTEMPT',
+        'R': 'RESULT',
+        'L': 'LESSON'
     }
 
     for row in results:
-        anchor_type, topic, text, choice, rationale, ts, session, source, scope, chat_id, agent_role, visibility, project_id = row
+        anchor_type, topic, text, choice, rationale, ts, session, source, scope, chat_id, agent_role, visibility, project_id, importance, due, links, task_id, metric = row
 
         type_label = type_labels.get(anchor_type, anchor_type or '?')
         topic = topic or '?'
@@ -608,8 +655,19 @@ else:
         # ANSI color codes
         print(f"\033[1;36m[{type_label}]\033[0m \033[1;33m{topic}\033[0m")
         print(f"  {text}")
-        if choice:
+        # For task types, show status/success differently
+        if anchor_type in ['T', 'G'] and choice:
+            print(f"  \033[32mStatus:\033[0m {choice}")
+        elif anchor_type == 'R' and choice:
+            success_color = "\033[32m" if choice == 'success' else "\033[31m"
+            print(f"  {success_color}Result:\033[0m {choice}")
+            if metric:
+                print(f"  \033[34mMetric:\033[0m {metric}")
+        elif choice:
             print(f"  \033[32mChoice:\033[0m {choice}")
+        # Show task_id link for ATTEMPT/RESULT/LESSON
+        if task_id and anchor_type in ['M', 'R', 'L']:
+            print(f"  \033[35mTask:\033[0m {task_id}")
         ts_rel, is_fresh = format_relative_time(ts)
         fresh_marker = " \033[1;92m[FRESH]\033[0m" if is_fresh else ""
         meta_parts = [ts_rel + fresh_marker, session]
@@ -621,6 +679,10 @@ else:
             meta_parts.append(f"role={agent_role}")
         if visibility and visibility != 'public':
             meta_parts.append(f"vis={visibility}")
+        if importance:
+            meta_parts.append(f"imp={importance}")
+        if due:
+            meta_parts.append(f"due={due[:10]}")
         print(f"  \033[90m{' | '.join(meta_parts)}\033[0m")
         print()
 PYEOF
@@ -645,6 +707,8 @@ script_dir = sys.argv[2]
 params_raw = sys.argv[3:]
 
 # Type abbreviation expansion
+# Core types: d/q/a/f/n/c (decision/question/action/fact/note/conversation)
+# Task types: T/G/M/R/L (todo/goal/attempt/result/lesson) - uppercase to distinguish
 def expand_type(t):
     type_map = {
         'd': 'd', 'decision': 'd',
@@ -652,7 +716,13 @@ def expand_type(t):
         'a': 'a', 'action': 'a',
         'f': 'f', 'fact': 'f',
         'n': 'n', 'note': 'n',
-        'c': 'c', 'conversation': 'c'
+        'c': 'c', 'conversation': 'c',
+        # Task-centric types (uppercase)
+        't': 'T', 'todo': 'T',
+        'g': 'G', 'goal': 'G',
+        'm': 'M', 'attempt': 'M',
+        'r': 'R', 'result': 'R',
+        'l': 'L', 'lesson': 'L'
     }
     return type_map.get(t.lower(), t)
 
@@ -677,8 +747,9 @@ if 'text' not in params:
 
 # Extract and validate type
 entry_type = expand_type(params.get('t') or params.get('type'))
-if entry_type not in ['d', 'q', 'a', 'f', 'n', 'c']:
-    print(f"ERROR: Invalid type '{entry_type}'. Must be d/q/a/f/n/c", file=sys.stderr)
+valid_types = ['d', 'q', 'a', 'f', 'n', 'c', 'T', 'G', 'M', 'R', 'L']
+if entry_type not in valid_types:
+    print(f"ERROR: Invalid type '{entry_type}'. Must be d/q/a/f/n/c or T/G/M/R/L", file=sys.stderr)
     sys.exit(1)
 
 # Generate timestamp
@@ -699,12 +770,18 @@ entry = {
     'anchor_rationale': params.get('rationale'),
     'anchor_session': params.get('session'),
     'anchor_source': params.get('source'),
+    'importance': params.get('importance'),
+    'due': params.get('due'),
+    'links': params.get('links'),
     'scope': params.get('scope', 'shared'),
     'chat_id': params.get('chat_id'),
     'agent_role': params.get('role'),
     'visibility': params.get('visibility', 'public'),
     'project_id': params.get('project'),
-    'source_line': None
+    'source_line': None,
+    # Task-centric fields
+    'task_id': params.get('task_id'),
+    'metric': params.get('metric')
 }
 
 # Insert into database
@@ -715,11 +792,15 @@ cursor.execute("""
     INSERT INTO chunks (
         bucket, timestamp, text, anchor_type, anchor_topic,
         anchor_choice, anchor_rationale, anchor_session, anchor_source,
-        scope, chat_id, agent_role, visibility, project_id, source_line
+        importance, due, links,
+        scope, chat_id, agent_role, visibility, project_id, source_line,
+        task_id, metric
     ) VALUES (
         :bucket, :timestamp, :text, :anchor_type, :anchor_topic,
         :anchor_choice, :anchor_rationale, :anchor_session, :anchor_source,
-        :scope, :chat_id, :agent_role, :visibility, :project_id, :source_line
+        :importance, :due, :links,
+        :scope, :chat_id, :agent_role, :visibility, :project_id, :source_line,
+        :task_id, :metric
     )
 """, entry)
 
@@ -728,7 +809,7 @@ conn.commit()
 conn.close()
 
 # Append to anchors.jsonl and update sync_state
-# Format: [type, topic, text, choice, rationale, timestamp, session, source]
+# Format: [type, topic, text, choice, rationale, timestamp, session, source, importance, due, links, task_id, metric]
 anchors_file = os.path.join(script_dir, "anchors.jsonl")
 jsonl_entry = [
     entry['anchor_type'],
@@ -738,7 +819,12 @@ jsonl_entry = [
     entry['anchor_rationale'],
     entry['timestamp'],
     entry['anchor_session'],
-    entry['anchor_source']
+    entry['anchor_source'],
+    entry['importance'],
+    entry['due'],
+    entry['links'],
+    entry['task_id'],
+    entry['metric']
 ]
 
 try:
@@ -1018,6 +1104,8 @@ def format_relative_time(ts_str):
         return (ts_str[:10], False)
 
 # Type abbreviation expansion
+# Core types: d/q/a/f/n/c (decision/question/action/fact/note/conversation)
+# Task types: T/G/M/R/L (todo/goal/attempt/result/lesson) - uppercase to distinguish
 def expand_type(t):
     type_map = {
         'd': 'd', 'decision': 'd',
@@ -1025,14 +1113,21 @@ def expand_type(t):
         'a': 'a', 'action': 'a',
         'f': 'f', 'fact': 'f',
         'n': 'n', 'note': 'n',
-        'c': 'c', 'conversation': 'c'
+        'c': 'c', 'conversation': 'c',
+        # Task-centric types (uppercase)
+        't': 'T', 'todo': 'T',
+        'g': 'G', 'goal': 'G',
+        'm': 'M', 'attempt': 'M',
+        'r': 'R', 'result': 'R',
+        'l': 'L', 'lesson': 'L'
     }
     return type_map.get(t.lower(), t)
 
 # Type label for output (uppercase single char)
 def type_label(t):
     return {
-        'd': 'D', 'q': 'Q', 'a': 'A', 'f': 'F', 'n': 'N', 'c': 'C'
+        'd': 'D', 'q': 'Q', 'a': 'A', 'f': 'F', 'n': 'N', 'c': 'C',
+        'T': 'T', 'G': 'G', 'M': 'M', 'R': 'R', 'L': 'L'
     }.get(t, '?')
 
 # Parse filters
@@ -1227,7 +1322,13 @@ type_map = {
     'a': 'actions',
     'f': 'facts',
     'n': 'notes',
-    'c': 'conversations'
+    'c': 'conversations',
+    # Task-centric types
+    'T': 'todos',
+    'G': 'goals',
+    'M': 'attempts',
+    'R': 'results',
+    'L': 'lessons'
 }
 
 type_breakdown = []

@@ -102,9 +102,9 @@ def parse_anchor_line(line_num, line_text):
         return None, f"Expected array at line {line_num}, got {type(data).__name__}"
 
     # Map array indices to field names
-    # [type, topic, text, choice, rationale, timestamp, session, source]
+    # [type, topic, text, choice, rationale, timestamp, session, source, importance?, due?, links?]
     if len(data) < 8:
-        return None, f"Expected 8 fields at line {line_num}, got {len(data)}"
+        return None, f"Expected at least 8 fields at line {line_num}, got {len(data)}"
 
     anchor_type = data[0] if data[0] else None
     anchor_topic = data[1] if data[1] else None
@@ -114,6 +114,9 @@ def parse_anchor_line(line_num, line_text):
     timestamp = data[5] if data[5] else None
     anchor_session = data[6] if data[6] else None
     anchor_source = data[7] if data[7] else None
+    importance = data[8] if len(data) > 8 and data[8] else None
+    due = data[9] if len(data) > 9 and data[9] else None
+    links = data[10] if len(data) > 10 and data[10] else None
 
     # Require text field
     if not text:
@@ -129,6 +132,9 @@ def parse_anchor_line(line_num, line_text):
         'anchor_rationale': anchor_rationale,
         'anchor_session': anchor_session,
         'anchor_source': anchor_source,
+        'importance': importance,
+        'due': due,
+        'links': links,
         'source_line': line_num,
     }, None
 
@@ -141,8 +147,10 @@ def insert_chunk(conn, chunk_data):
         INSERT INTO chunks (
             bucket, timestamp, text,
             anchor_type, anchor_topic, anchor_choice, anchor_rationale,
-            anchor_session, anchor_source, source_line
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            anchor_session, anchor_source,
+            importance, due, links,
+            source_line
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''',
         (
             chunk_data['bucket'],
@@ -154,6 +162,9 @@ def insert_chunk(conn, chunk_data):
             chunk_data['anchor_rationale'],
             chunk_data['anchor_session'],
             chunk_data['anchor_source'],
+            chunk_data['importance'],
+            chunk_data['due'],
+            chunk_data['links'],
             chunk_data['source_line'],
         )
     )
