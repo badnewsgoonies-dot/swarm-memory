@@ -892,3 +892,62 @@ Traceback (most recent call last):
 [2025-12-02T23:45:35-05:00] [msg-assistant] SKIP: Could not extract response text
 [2025-12-02T23:47:32-05:00] [msg-user] RECORDED: User message (74 chars, 13 words, session=3e76a4fe)
 {
+[2025-12-02T23:48:38-05:00] [msg-assistant] SKIP: Could not extract response text
+[2025-12-02T23:49:49-05:00] [msg-user] RECORDED: User message (30 chars, 6 words, session=3e76a4fe)
+{
+[2025-12-02T23:50:00-05:00] [msg-assistant] SKIP: Could not extract response text
+[2025-12-02T23:50:34-05:00] [msg-user] RECORDED: User message (24 chars, 4 words, session=3e76a4fe)
+{
+[2025-12-02T23:50:58-05:00] [msg-assistant] SKIP: Could not extract response text
+[2025-12-02T23:51:48-05:00] [msg-user] RECORDED: User message (93 chars, 20 words, session=3e76a4fe)
+{
+[2025-12-02T23:56:30-05:00] RECORDED: Create: agent_loop.py (topic=file-change)
+{
+[2025-12-02T23:58:00-05:00] [msg-assistant] SKIP: Too short (47 chars)
+[2025-12-03T00:00:57-05:00] [msg-user] RECORDED: User message (189 chars, 33 words, session=914e2034)
+{
+[2025-12-03T00:02:50-05:00] [msg-assistant] SKIP: Too short (35 chars)
+[2025-12-03T00:06:13-05:00] [msg-user] RECORDED: User message (48 chars, 9 words, session=696bebaf)
+{
+[2025-12-03T00:06:25-05:00] [msg-assistant] SKIP: Too short (69 chars)
+[2025-12-03T00:06:32-05:00] [msg-user] SKIP: Too short (1 chars)
+[2025-12-03T00:08:58-05:00] [msg-assistant] SKIP: Too short (52 chars)
+[2025-12-03T00:09:21-05:00] [msg-user] SKIP: Too short (19 chars)
+[2025-12-03T00:17:28-05:00] [msg-user] RECORDED: User message (3413 chars, 529 words, session=e57a92c6)
+{
+[2025-12-03T00:18:49-05:00] RECORDED: Edit: agent_loop.py (topic=file-change)
+{
+[2025-12-03T00:19:00-05:00] RECORDED: Edit: agent_loop.py (topic=file-change)
+{
+[2025-12-03T00:19:10-05:00] RECORDED: Edit: agent_loop.py (topic=file-change)
+{
+[2025-12-03T00:19:16-05:00] RECORDED: Edit: agent_loop.py (topic=file-change)
+{
+[2025-12-03T00:20:02-05:00] [msg-assistant] SKIP: Too short (58 chars)
+[2025-12-03T00:20:33-05:00] [msg-assistant] SKIP: Too short (31 chars)
+[2025-12-03T00:21:27-05:00] [msg-user] RECORDED: User message (50 chars, 7 words, session=e57a92c6)
+{
+[2025-12-03T00:22:17-05:00] [msg-assistant] SKIP: Too short (43 chars)
+[2025-12-03T00:36:42-05:00] [msg-assistant] SKIP: Too short (76 chars)
+[2025-12-03T00:37:29-05:00] [msg-user] RECORDED: User message (35 chars, 5 words, session=696bebaf)
+{
+[2025-12-03T00:43:31-05:00] [msg-assistant] SKIP: Too short (19 chars)
+[2025-12-03T00:46:53-05:00] [msg-user] RECORDED: User message (47 chars, 8 words, session=696bebaf)
+{
+[2025-12-03T00:48:33-05:00] [msg-assistant] SKIP: Too few words (14)
+[2025-12-03T00:51:01-05:00] [msg-user] RECORDED: User message (140 chars, 21 words, session=d143b9bd)
+{
+[2025-12-03T00:53:06-05:00] [msg-user] RECORDED: User message (51 chars, 7 words, session=ae4f891c)
+{
+[2025-12-03T00:53:10-05:00] [msg-user] RECORDED: User message (51 chars, 7 words, session=c1578d76)
+{
+[2025-12-03T00:53:35-05:00] [msg-assistant] SKIP: Too short (34 chars)
+[2025-12-03T00:54:30-05:00] [msg-user] RECORDED: User message (28 chars, 3 words, session=ae4f891c)
+{
+[2025-12-03T00:54:43-05:00] [msg-assistant] SKIP: Too short (59 chars)
+[2025-12-03T00:55:50-05:00] [msg-user] RECORDED: User message (33 chars, 8 words, session=ae4f891c)
+{
+[2025-12-03T00:55:58-05:00] [msg-assistant] RECORDED: Assistant message (108 chars, session=ae4f891c)
+{
+[2025-12-03T01:02:19-05:00] [msg-user] RECORDED: User message (36 chars, 6 words, session=c1578d76)
+{
