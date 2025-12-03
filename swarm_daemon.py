@@ -256,9 +256,10 @@ def write_blocked_result(
     """
     logger = logging.getLogger(__name__)
 
-    # Write RESULT glyph with failure
+    # Write RESULT glyph with failure and orchestration metrics
     try:
-        metric = f"blocked_reason={blocked_reason}:{error_sig}"
+        # Include rich orchestration metrics for analysis
+        metric = f"orch_rounds={round_num};orch_phase=blocked;orch_blocked_reason={blocked_reason};error_sig={error_sig}"
         subprocess.run(
             [
                 str(mem_db_path), "write",
@@ -272,7 +273,7 @@ def write_blocked_result(
             capture_output=True,
             timeout=60
         )
-        logger.info(f"Wrote RESULT glyph: blocked_reason={blocked_reason}")
+        logger.info(f"Wrote RESULT glyph: orch_rounds={round_num}, blocked_reason={blocked_reason}")
     except Exception as e:
         logger.error(f"Failed to write RESULT glyph: {e}")
 
@@ -305,6 +306,38 @@ def write_blocked_result(
         logger.info(f"Wrote LESSON glyph for blocked task")
     except Exception as e:
         logger.error(f"Failed to write LESSON glyph: {e}")
+
+
+def write_success_result(
+    task_id: str,
+    topic: str,
+    round_num: int,
+    mem_db_path: Path
+) -> None:
+    """
+    Write RESULT (success) glyph when orchestration completes successfully.
+    """
+    logger = logging.getLogger(__name__)
+
+    try:
+        # Include orchestration metrics for analysis
+        metric = f"orch_rounds={round_num};orch_phase=done;orch_blocked_reason=none"
+        subprocess.run(
+            [
+                str(mem_db_path), "write",
+                "t=R",
+                f"topic={topic}",
+                f"task={task_id}",
+                "choice=success",
+                f"text=Orchestration completed successfully in {round_num} round(s)",
+                f"metric={metric}"
+            ],
+            capture_output=True,
+            timeout=60
+        )
+        logger.info(f"Wrote RESULT glyph: orch_rounds={round_num}, success")
+    except Exception as e:
+        logger.error(f"Failed to write success RESULT glyph: {e}")
 
 
 # =============================================================================
@@ -471,6 +504,13 @@ class OrchestrationState:
         if success:
             self.current_phase = "done"
             self.logger.info(f"Phase transition: AUDIT -> DONE (round {self.current_round})")
+            # Write success RESULT with orchestration metrics
+            write_success_result(
+                task_id=self.task_id,
+                topic=self.topic,
+                round_num=self.current_round,
+                mem_db_path=self.mem_db_path
+            )
         return success
 
     def transition_audit_fail(self, audit_log: str) -> Tuple[bool, str]:
