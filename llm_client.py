@@ -166,9 +166,9 @@ MODELS = {
     },
     "codex-mini": {
         "provider": "codex",
-        "model": "gpt-5.1-codex-mini",
-        "effort": "medium",
-        "description": "Codex Mini - faster, cheaper",
+        "model": "gpt-5.1",
+        "effort": "low",
+        "description": "GPT-5.1 low effort - fast, good quality",
         "max_tokens": 4000,
         "timeout": 120,
     },

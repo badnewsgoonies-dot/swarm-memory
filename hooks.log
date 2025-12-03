@@ -951,3 +951,37 @@ Traceback (most recent call last):
 {
 [2025-12-03T01:02:19-05:00] [msg-user] RECORDED: User message (36 chars, 6 words, session=c1578d76)
 {
+[2025-12-03T01:02:57-05:00] [msg-assistant] SKIP: Too short (5 chars)
+[2025-12-03T01:08:12-05:00] [msg-user] SKIP: Too short (1 chars)
+[2025-12-03T01:08:31-05:00] [msg-assistant] SKIP: Too short (63 chars)
+[2025-12-03T01:08:54-05:00] [msg-user] RECORDED: User message (41 chars, 6 words, session=f4b31abb)
+{
+[2025-12-03T01:10:14-05:00] RECORDED: Create: codex_comparison_test.py (topic=test)
+{
+[2025-12-03T01:12:34-05:00] [msg-assistant] SKIP: Too short (62 chars)
+[2025-12-03T01:13:10-05:00] [msg-user] RECORDED: User message (24 chars, 5 words, session=f4b31abb)
+{
+[2025-12-03T01:13:45-05:00] RECORDED: Edit: llm_client.py (topic=file-change)
+{
+[2025-12-03T01:13:57-05:00] [msg-assistant] SKIP: Too short (88 chars)
+[2025-12-03T01:14:06-05:00] [msg-user] RECORDED: User message (29 chars, 7 words, session=f4b31abb)
+{
+[2025-12-03T01:15:06-05:00] [msg-assistant] RECORDED: Assistant message (104 chars, session=f4b31abb)
+{
+[2025-12-03T01:27:14-05:00] [msg-user] RECORDED: User message (47 chars, 12 words, session=f4b31abb)
+{
+[2025-12-03T01:35:10-05:00] [msg-user] RECORDED: User message (86 chars, 9 words, session=f4b31abb)
+{
+[2025-12-03T01:40:34-05:00] [msg-assistant] SKIP: Too short (31 chars)
+[2025-12-03T01:41:23-05:00] [msg-user] RECORDED: User message (47 chars, 8 words, session=f4b31abb)
+{
+[2025-12-03T01:42:25-05:00] [msg-assistant] SKIP: Too short (45 chars)
+[2025-12-03T01:43:38-05:00] [msg-user] RECORDED: User message (61 chars, 13 words, session=f4b31abb)
+{
+[2025-12-03T01:46:12-05:00] [msg-assistant] SKIP: Too short (15 chars)
+[2025-12-03T01:47:20-05:00] [msg-user] RECORDED: User message (107 chars, 21 words, session=f4b31abb)
+{
+[2025-12-03T01:51:49-05:00] [msg-assistant] SKIP: Too short (45 chars)
+[2025-12-03T01:54:42-05:00] [msg-user] RECORDED: User message (21 chars, 4 words, session=f4b31abb)
+{
+[2025-12-03T07:06:54-05:00] [msg-user] SKIP: Too short (11 chars)
