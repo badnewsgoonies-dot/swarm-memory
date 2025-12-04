@@ -1,0 +1,15 @@
+# Core dependencies
+PyYAML>=6.0
+
+# Embeddings (local backend - no API key needed)
+sentence-transformers>=2.2.0
+torch>=2.0.0
+
+# Optional: OpenAI API embeddings
+openai>=1.0.0
+
+# Optional: Anthropic API for LLM calls
+anthropic>=0.18.0
+
+# Optional: HTTP server dependencies (already in stdlib)
+# http.server (included in Python)

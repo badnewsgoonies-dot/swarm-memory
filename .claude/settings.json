@@ -1,0 +1,23 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": ".claude/hooks/session-start.sh"
+      }
+    ]
+  },
+  "env": {
+    "SWARM_LLM_PROVIDER": "claude",
+    "EMBEDDING_BACKEND": "local",
+    "SWARM_LOG_LEVEL": "INFO"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)"
+    ]
+  }
+}

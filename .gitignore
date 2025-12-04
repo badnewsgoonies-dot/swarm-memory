@@ -6,7 +6,11 @@ daemon_state.json
 daemon.kill
 notify_state.json
 notify_daemon.kill
-.claude/
+# Claude Code config - allow settings and hooks, ignore session files
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+!.claude/commands/
 .claude-tmp/
 .claude.json
 .claude.json.backup
