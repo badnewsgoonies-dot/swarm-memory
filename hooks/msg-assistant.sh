@@ -1,9 +1,19 @@
 #!/usr/bin/env bash
 #
-# msg-assistant.sh - Capture assistant responses to memory
+# msg-assistant.sh - Stream of Consciousness Memory Capture
+#
+# Captures ALL assistant responses as "Ideas" (type=I) for continuous
+# memory formation. Ideas have very short decay and are periodically
+# promoted to Facts/Decisions or discarded.
 #
 # Hook event: Stop
 # Receives JSON: {"session_id": "...", "transcript_path": "...", ...}
+#
+# Stream of Consciousness Features:
+# - No minimum length/word filters (capture everything)
+# - Type=I (Idea) for immediate fleeting thoughts
+# - Fast decay (~2 hours) unless promoted
+# - Periodic consolidation promotes valuable ideas
 
 set -euo pipefail
 
@@ -48,23 +58,17 @@ fi
 
 [[ -z "$RESPONSE" ]] && { log "SKIP: Could not extract response text"; exit 0; }
 
-# === FILTERING ===
-
-# Check length (minimum 100 chars for assistant responses)
-RESPONSE_LEN=${#RESPONSE}
-[[ $RESPONSE_LEN -lt 100 ]] && { log "SKIP: Too short ($RESPONSE_LEN chars)"; exit 0; }
-
-# Word count check (minimum 15 words)
-WORD_COUNT=$(echo "$RESPONSE" | wc -w)
-[[ $WORD_COUNT -lt 15 ]] && { log "SKIP: Too few words ($WORD_COUNT)"; exit 0; }
+# === STREAM OF CONSCIOUSNESS: No minimum filters ===
+# All assistant outputs are captured as Ideas
+# The priority scoring system will handle decay
 
 # === CONTENT PROCESSING ===
 
-# Extract a summary/excerpt (prefer ending summary or first meaningful paragraph)
+# Extract a summary/excerpt
 MAX_LEN=4000
 EXCERPT="$RESPONSE"
 
-# Look for summary markers and extract from there
+# Look for summary markers and extract from there (improves quality)
 if echo "$RESPONSE" | grep -qiE "(## summary|in summary|to summarize|### done|completed:|finished:)"; then
     # Extract from the summary marker onwards
     SUMMARY_PART=$(echo "$RESPONSE" | sed -n '/[Ss]ummary\|[Dd]one\|[Cc]ompleted\|[Ff]inished/,$p' | head -c $MAX_LEN)
@@ -81,13 +85,15 @@ fi
 # Escape for shell safety
 EXCERPT_ESCAPED=$(printf '%s' "$EXCERPT" | sed "s/'/'\\\\''/g")
 
-# === RECORD TO MEMORY ===
+# === RECORD AS IDEA (Stream of Consciousness) ===
+# Type=I means this is a fleeting thought that will decay quickly
+# unless promoted to a permanent type (F, D, etc.)
 
 SESSION_SHORT="${SESSION_ID:0:8}"
 (
     "$MEM_DB" write \
-        t=c \
-        topic="conversation" \
+        t=I \
+        topic="idea" \
         text="$EXCERPT_ESCAPED" \
         choice="assistant" \
         session="$SESSION_SHORT" \
@@ -97,5 +103,5 @@ SESSION_SHORT="${SESSION_ID:0:8}"
         2>&1 | head -1 >> "$LOG_FILE"
 ) &
 
-log "RECORDED: Assistant message (${#EXCERPT} chars, session=$SESSION_SHORT)"
+log "IDEA: Recorded assistant thought (${#EXCERPT} chars, session=$SESSION_SHORT)"
 exit 0
