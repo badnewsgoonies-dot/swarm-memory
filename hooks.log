@@ -985,3 +985,50 @@ Traceback (most recent call last):
 [2025-12-03T01:54:42-05:00] [msg-user] RECORDED: User message (21 chars, 4 words, session=f4b31abb)
 {
 [2025-12-03T07:06:54-05:00] [msg-user] SKIP: Too short (11 chars)
+[2025-12-03T07:07:31-05:00] [msg-assistant] SKIP: Too short (47 chars)
+[2025-12-03T07:08:07-05:00] [msg-user] SKIP: Too short (3 chars)
+[2025-12-03T07:08:11-05:00] [msg-assistant] SKIP: Too short (71 chars)
+[2025-12-03T17:02:58-05:00] [msg-user] SKIP: Too short (4 chars)
+[2025-12-03T17:03:26-05:00] [msg-assistant] SKIP: Too short (62 chars)
+[2025-12-03T17:04:30-05:00] [msg-user] RECORDED: User message (99 chars, 20 words, session=c8299219)
+{
+[2025-12-03T17:07:13-05:00] [msg-user] RECORDED: User message (7161 chars, 947 words, session=c8299219)
+{
+[2025-12-03T17:09:27-05:00] [msg-assistant] RECORDED: Assistant message (172 chars, session=40b46cf5)
+{
+[2025-12-03T17:09:52-05:00] [msg-assistant] RECORDED: Assistant message (148 chars, session=d741feee)
+{
+[2025-12-03T17:12:14-05:00] [msg-assistant] RECORDED: Assistant message (184 chars, session=dd0f7d15)
+{
+[2025-12-03T17:12:30-05:00] [msg-assistant] RECORDED: Assistant message (224 chars, session=a11a17e0)
+{
+[2025-12-03T17:12:46-05:00] [msg-assistant] SKIP: Too short (82 chars)
+[2025-12-03T17:12:55-05:00] [msg-assistant] SKIP: Too short (7 chars)
+[2025-12-03T17:13:15-05:00] [msg-assistant] SKIP: Too short (25 chars)
+[2025-12-03T17:14:02-05:00] [msg-assistant] SKIP: Could not extract response text
+[2025-12-04T01:00:42-05:00] [msg-user] RECORDED: User message (70 chars, 14 words, session=f7734375)
+{
+[2025-12-04T01:01:16-05:00] [msg-assistant] RECORDED: Assistant message (157 chars, session=f7734375)
+{
+[2025-12-04T01:01:38-05:00] [msg-user] RECORDED: User message (30 chars, 5 words, session=f7734375)
+{
+[2025-12-04T01:01:46-05:00] [msg-assistant] SKIP: Too short (89 chars)
+[2025-12-04T01:01:54-05:00] [msg-user] SKIP: Too short (7 chars)
+[2025-12-04T01:02:24-05:00] RECORDED: Edit: /home/geni/.claude/settings.json (topic=config)
+{
+[2025-12-04T01:02:34-05:00] RECORDED: Edit: /home/geni/.claude/settings.json (topic=config)
+{
+[2025-12-04T01:02:44-05:00] [msg-assistant] SKIP: Too short (66 chars)
+[2025-12-04T01:04:18-05:00] [msg-user] RECORDED: User message (49 chars, 10 words, session=f7734375)
+{
+[2025-12-04T01:04:35-05:00] RECORDED: Edit: /home/geni/.claude/settings.json (topic=config)
+{
+[2025-12-04T01:04:45-05:00] RECORDED: Edit: /home/geni/.claude/settings.json (topic=config)
+{
+[2025-12-04T01:04:52-05:00] [msg-assistant] SKIP: Too short (11 chars)
+[2025-12-04T01:05:48-05:00] [msg-user] SKIP: Too short (18 chars)
+[2025-12-04T01:05:52-05:00] [msg-assistant] SKIP: Too short (83 chars)
+[2025-12-04T01:06:44-05:00] [msg-user] RECORDED: User message (23 chars, 4 words, session=95de793b)
+{
+[2025-12-04T01:06:52-05:00] [msg-assistant] SKIP: Too short (23 chars)
+[2025-12-04T01:07:03-05:00] [msg-user] SKIP: Too short (9 chars)
