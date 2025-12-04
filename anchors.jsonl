@@ -1012,3 +1012,4 @@
 ["T", "testing", "Implement unit tests for priority scoring", "OPEN", null, "2025-12-04T15:12:00Z", null, null, null, null, null, null, null]
 ["T", "docs", "Update README with new type I documentation", "OPEN", null, "2025-12-04T15:12:00Z", null, null, null, null, null, null, null]
 ["d", "policy", "Always use type weights for scoring", "approved", null, "2025-12-04T15:12:00Z", null, null, "H", null, null, null, null]
+["I", "test-final", "Final test idea", null, null, "2025-12-04T15:20:06Z", null, null, null, null, null, null, null]
