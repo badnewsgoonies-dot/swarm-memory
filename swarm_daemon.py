@@ -28,7 +28,10 @@ Safety:
 """
 
 import argparse
+import atexit
+import fcntl
 import json
+import signal
 import subprocess
 import sys
 import os
@@ -37,12 +40,127 @@ import logging
 import shlex
 import hashlib
 import re
-from typing import List, Tuple, Optional, Dict, Any
+from contextlib import contextmanager
+from typing import List, Tuple, Optional, Dict, Any, Set
 from datetime import datetime, timedelta
 from pathlib import Path
 
 # Import governor for action enforcement
 from governor import Governor
+
+
+# =============================================================================
+# FILE LOCKING UTILITIES
+# =============================================================================
+
+# Global registry of child PIDs for cleanup
+_child_pids: Set[int] = set()
+
+
+@contextmanager
+def file_lock(file_path: Path, timeout: float = 30.0):
+    """
+    Context manager for exclusive file locking to prevent race conditions.
+
+    Uses fcntl.flock for Unix systems. Blocks until lock is acquired or timeout.
+
+    Args:
+        file_path: Path to the file to lock
+        timeout: Maximum seconds to wait for lock (default 30)
+
+    Raises:
+        TimeoutError: If lock cannot be acquired within timeout
+        OSError: If file cannot be opened or locked
+
+    Usage:
+        with file_lock(Path("/path/to/file.txt")):
+            # Exclusive access to file
+            content = file_path.read_text()
+            file_path.write_text(modified_content)
+    """
+    lock_path = file_path.with_suffix(file_path.suffix + ".lock")
+    lock_fd = None
+    start_time = time.time()
+
+    try:
+        # Create/open lock file
+        lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+
+        # Try to acquire lock with timeout
+        while True:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break  # Lock acquired
+            except BlockingIOError:
+                elapsed = time.time() - start_time
+                if elapsed >= timeout:
+                    raise TimeoutError(
+                        f"Could not acquire lock on {file_path} within {timeout}s. "
+                        f"Another process may be editing this file."
+                    )
+                time.sleep(0.1)  # Brief sleep before retry
+
+        yield  # Lock held, allow work
+
+    finally:
+        if lock_fd is not None:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                os.close(lock_fd)
+            except Exception:
+                pass
+            # Clean up lock file (best effort)
+            try:
+                lock_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+def _cleanup_children():
+    """Terminate all tracked child processes on exit."""
+    global _child_pids
+    logger = logging.getLogger(__name__)
+
+    for pid in list(_child_pids):
+        try:
+            os.kill(pid, signal.SIGTERM)
+            logger.info(f"Sent SIGTERM to child PID {pid}")
+        except ProcessLookupError:
+            pass  # Already dead
+        except Exception as e:
+            logger.warning(f"Failed to terminate child PID {pid}: {e}")
+
+    # Give processes time to terminate gracefully
+    time.sleep(0.5)
+
+    # Force kill any remaining
+    for pid in list(_child_pids):
+        try:
+            os.kill(pid, signal.SIGKILL)
+            logger.info(f"Sent SIGKILL to child PID {pid}")
+        except ProcessLookupError:
+            pass
+        except Exception:
+            pass
+
+    _child_pids.clear()
+
+
+def _signal_handler(signum, frame):
+    """Handle termination signals by cleaning up children first."""
+    logger = logging.getLogger(__name__)
+    logger.info(f"Received signal {signum}, cleaning up child processes...")
+    _cleanup_children()
+    sys.exit(128 + signum)
+
+
+# Register cleanup handlers
+atexit.register(_cleanup_children)
+signal.signal(signal.SIGTERM, _signal_handler)
+signal.signal(signal.SIGINT, _signal_handler)
 
 
 # =============================================================================
@@ -53,79 +171,109 @@ def extract_error_signature(audit_log: str) -> str:
     """
     Extract a canonical error signature from audit log output.
 
-    Returns a signature string in format: <category>:<details>
+    IMPORTANT: This function captures ALL errors found, not just the first one.
+    This prevents the "whack-a-mole" anti-loop vulnerability where fixing one
+    error exposes another, resetting the loop detection.
+
+    Returns a signature string in format: <category>:<hash of all errors>
+    or for single errors: <category>:<details>
 
     Categories:
-    - ts:TS<code>:<first line of message> - TypeScript compiler errors
-    - jest:<test name> - Jest/Vitest test failures
+    - ts:TS<code>:<message> or ts:multi:<hash> - TypeScript compiler errors
+    - jest:<test name> or jest:multi:<hash> - Jest/Vitest test failures
     - runtime:<ErrorType>:<message> - Runtime errors (TypeError, etc.)
     - human:<metric> - Human-provided metrics like plan_quality=4
+    - multi:<hash> - Multiple errors of different types
     - unknown:<first line truncated to 80 chars> - Fallback
     """
     if not audit_log or not audit_log.strip():
         return "unknown:empty_audit_log"
 
     log = audit_log.strip()
+    collected_errors: List[str] = []
 
     # 1. TypeScript errors: TS(\d+): <message>
-    # Match patterns like "error TS2304: Cannot find name 'foo'"
-    ts_match = re.search(r'(?:error\s+)?(TS\d+):\s*(.+?)(?:\n|$)', log, re.IGNORECASE)
-    if ts_match:
-        ts_code = ts_match.group(1).upper()
-        msg = ts_match.group(2).strip()[:60]  # First 60 chars of message
-        return f"ts:{ts_code}:{msg}"
+    # Find ALL TypeScript errors, not just the first one
+    ts_matches = re.findall(r'(?:error\s+)?(TS\d+):\s*(.+?)(?:\n|$)', log, re.IGNORECASE)
+    for ts_code, msg in ts_matches:
+        ts_code = ts_code.upper()
+        collected_errors.append(f"ts:{ts_code}")
 
     # 2. Jest/Vitest test failures: ● <test name> or FAIL <test name>
-    # Match "● TestSuite > test name" or "FAIL src/foo.test.ts"
-    jest_match = re.search(r'(?:●|FAIL)\s+(.+?)(?:\n|$)', log)
-    if jest_match:
-        test_name = jest_match.group(1).strip()[:80]
-        return f"jest:{test_name}"
+    jest_matches = re.findall(r'(?:●|FAIL)\s+(.+?)(?:\n|$)', log)
+    for test_name in jest_matches:
+        collected_errors.append(f"jest:{test_name.strip()[:40]}")
 
     # Also check for "✕" (vitest failure marker)
-    vitest_match = re.search(r'[✕✗]\s+(.+?)(?:\n|$)', log)
-    if vitest_match:
-        test_name = vitest_match.group(1).strip()[:80]
-        return f"jest:{test_name}"
+    vitest_matches = re.findall(r'[✕✗]\s+(.+?)(?:\n|$)', log)
+    for test_name in vitest_matches:
+        collected_errors.append(f"jest:{test_name.strip()[:40]}")
 
     # 3. Runtime errors: TypeError, ReferenceError, etc.
-    # Match "TypeError: Cannot read property 'x' of undefined"
-    runtime_match = re.search(
+    runtime_matches = re.findall(
         r'(TypeError|ReferenceError|SyntaxError|RangeError|Error|Exception):\s*(.+?)(?:\n|$)',
         log, re.IGNORECASE
     )
-    if runtime_match:
-        error_type = runtime_match.group(1)
-        msg = runtime_match.group(2).strip()[:60]
-        return f"runtime:{error_type}:{msg}"
+    for error_type, msg in runtime_matches:
+        collected_errors.append(f"runtime:{error_type}")
 
     # 4. Human metrics: plan_quality=N;exec_success=false etc.
-    # Match patterns like "plan_quality=4" or "exec_success=false"
     human_match = re.search(r'((?:plan_quality|exec_success|audit_score)[=:][^;\s]+(?:;[^;\s]+)*)', log, re.IGNORECASE)
     if human_match:
         metric = human_match.group(1).strip()[:80]
-        return f"human:{metric}"
+        collected_errors.append(f"human:{metric}")
 
-    # 5. ESLint/linting errors
-    lint_match = re.search(r'(\d+:\d+)\s+(error|warning)\s+(.+?)\s+(\S+)$', log, re.MULTILINE)
-    if lint_match:
-        rule = lint_match.group(4)
-        msg = lint_match.group(3).strip()[:40]
-        return f"lint:{rule}:{msg}"
+    # 5. ESLint/linting errors - find ALL
+    lint_matches = re.findall(r'(\d+:\d+)\s+(error|warning)\s+(.+?)\s+(\S+)$', log, re.MULTILINE)
+    for _, severity, msg, rule in lint_matches:
+        if severity == 'error':
+            collected_errors.append(f"lint:{rule}")
 
-    # 6. Build/compilation errors (generic)
-    build_match = re.search(r'(?:error|failed|failure)[:\s]+(.+?)(?:\n|$)', log, re.IGNORECASE)
-    if build_match:
-        msg = build_match.group(1).strip()[:60]
-        return f"build:{msg}"
+    # 6. Build/compilation errors (generic) - find ALL
+    build_matches = re.findall(r'(?:error|failed|failure)[:\s]+(.+?)(?:\n|$)', log, re.IGNORECASE)
+    for msg in build_matches:
+        # Avoid duplicating already captured TS errors
+        if not re.match(r'^TS\d+:', msg):
+            collected_errors.append(f"build:{msg.strip()[:30]}")
 
-    # 7. Fallback: first non-empty line truncated to 80 chars
-    for line in log.split('\n'):
-        line = line.strip()
-        if line and not line.startswith('#'):
-            return f"unknown:{line[:80]}"
+    # Deduplicate while preserving order
+    seen = set()
+    unique_errors = []
+    for err in collected_errors:
+        if err not in seen:
+            seen.add(err)
+            unique_errors.append(err)
 
-    return "unknown:no_parseable_content"
+    # Generate signature based on number of unique errors
+    if not unique_errors:
+        # Fallback: first non-empty line truncated to 80 chars
+        for line in log.split('\n'):
+            line = line.strip()
+            if line and not line.startswith('#'):
+                return f"unknown:{line[:80]}"
+        return "unknown:no_parseable_content"
+
+    if len(unique_errors) == 1:
+        # Single error - return it directly
+        return unique_errors[0]
+
+    # Multiple errors - create a combined signature hash
+    # Sort to ensure deterministic ordering
+    sorted_errors = sorted(unique_errors)
+    combined = ";".join(sorted_errors)
+
+    # Determine primary category
+    categories = set(err.split(':')[0] for err in unique_errors)
+    if len(categories) == 1:
+        category = list(categories)[0]
+    else:
+        category = "multi"
+
+    # Create a short hash of all errors for stable comparison
+    import hashlib
+    error_hash = hashlib.md5(combined.encode()).hexdigest()[:12]
+
+    return f"{category}:multi:{error_hash}:{len(unique_errors)}errors"
 
 
 # =============================================================================
@@ -1275,6 +1423,10 @@ def execute_action(action_data, repo_root: Path, unrestricted: bool, state=None)
         env = os.environ.copy()
         env["HOME"] = str(Path.home() / "swarm/memory/.claude-tmp")
         proc = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # Track child PID for cleanup on parent termination (prevents zombie processes)
+        _child_pids.add(proc.pid)
+
         call_mem_db("write", "t=a", "topic=daemon", f"text=Spawned sub-daemon PID {proc.pid}: {sub_objective[:100]}")
 
         if wait:
@@ -1289,7 +1441,8 @@ def execute_action(action_data, repo_root: Path, unrestricted: bool, state=None)
                         with open(state_file) as f:
                             sub_state = json.load(f)
                         if sub_state.get("status") in ["done", "error", "stopped", "killed", "interrupted"]:
-                            # Sub-daemon completed
+                            # Sub-daemon completed - remove from tracking
+                            _child_pids.discard(proc.pid)
                             sub_result = None
                             if sub_state.get("history"):
                                 sub_result = sub_state["history"][-1]
@@ -1307,7 +1460,9 @@ def execute_action(action_data, repo_root: Path, unrestricted: bool, state=None)
                 # Check if process is still running
                 poll_result = proc.poll()
                 if poll_result is not None:
-                    # Process exited, check state file one last time
+                    # Process exited - remove from tracking
+                    _child_pids.discard(proc.pid)
+                    # Check state file one last time
                     if state_file.exists():
                         try:
                             with open(state_file) as f:
@@ -1325,8 +1480,17 @@ def execute_action(action_data, repo_root: Path, unrestricted: bool, state=None)
 
                 time.sleep(5)  # Poll every 5 seconds
 
-            # Timeout reached
-            logger.warning(f"Sub-daemon PID {proc.pid} timeout after {timeout}s")
+            # Timeout reached - try to terminate the child process
+            logger.warning(f"Sub-daemon PID {proc.pid} timeout after {timeout}s, terminating...")
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)  # Wait up to 5s for graceful termination
+            except Exception:
+                try:
+                    proc.kill()  # Force kill if terminate didn't work
+                except Exception:
+                    pass
+            _child_pids.discard(proc.pid)
             return {"success": False, "error": f"Sub-daemon timeout after {timeout}s", "pid": proc.pid, "timeout": True}
 
         # Non-blocking (existing behavior)
@@ -1577,13 +1741,15 @@ def execute_action(action_data, repo_root: Path, unrestricted: bool, state=None)
         if not unrestricted and not is_within_repo(target, repo_root):
             return {"success": False, "error": "Path outside repo root"}
         try:
-            if mode == "append":
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with target.open("a", encoding="utf-8") as f:
-                    f.write(content)
-            else:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(content, encoding="utf-8")
+            # Use file locking to prevent race conditions between concurrent agents
+            with file_lock(target, timeout=30.0):
+                if mode == "append":
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with target.open("a", encoding="utf-8") as f:
+                        f.write(content)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(content, encoding="utf-8")
             # Auto-record edit to memory
             edit_summary = f"Edited {path_str} ({mode})"
             if reason:

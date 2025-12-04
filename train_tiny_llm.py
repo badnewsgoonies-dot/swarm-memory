@@ -46,7 +46,10 @@ def load_text_from_db(
     topic: str = "affordance-reasoning",
     max_rows: int = 1000,
 ) -> List[str]:
-    """Load text fields from memory.db for a given topic (or all topics if topic='all')."""
+    """Load text fields from memory.db for a given topic (or all topics if topic='all').
+
+    NOTE: For large datasets, consider using stream_text_from_db() instead to avoid OOM.
+    """
     db = Path(db_path)
     if not db.exists():
         raise SystemExit(f"Database not found at {db}")
@@ -86,6 +89,87 @@ def load_text_from_db(
     if not texts:
         raise SystemExit(f"No text rows found for topic='{topic}' in {db}")
     return texts
+
+
+def stream_text_from_db(
+    db_path: str,
+    topic: str = "affordance-reasoning",
+    max_rows: Optional[int] = None,
+    batch_size: int = 100,
+):
+    """Generator that streams text from memory.db to avoid OOM on large datasets.
+
+    Yields text strings one at a time, fetching in batches from the database.
+    This allows processing arbitrarily large datasets without loading everything into RAM.
+
+    Args:
+        db_path: Path to memory.db
+        topic: Anchor topic to filter by (or 'all' for all topics)
+        max_rows: Maximum rows to yield (None for unlimited)
+        batch_size: Number of rows to fetch per database query
+
+    Yields:
+        str: Text content from each row
+    """
+    db = Path(db_path)
+    if not db.exists():
+        raise SystemExit(f"Database not found at {db}")
+
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    offset = 0
+    yielded = 0
+
+    try:
+        while True:
+            if topic.lower() == "all":
+                cursor.execute(
+                    """
+                    SELECT text
+                    FROM chunks
+                    WHERE text IS NOT NULL
+                    ORDER BY timestamp DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (batch_size, offset),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT text
+                    FROM chunks
+                    WHERE anchor_topic = ?
+                      AND text IS NOT NULL
+                    ORDER BY timestamp DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (topic, batch_size, offset),
+                )
+
+            rows = cursor.fetchall()
+            if not rows:
+                break
+
+            for row in rows:
+                text = (row[0] or "").strip()
+                if text:
+                    yield text
+                    yielded += 1
+                    if max_rows is not None and yielded >= max_rows:
+                        return
+
+            offset += batch_size
+
+            # Early exit if we got fewer rows than batch_size
+            if len(rows) < batch_size:
+                break
+    finally:
+        conn.close()
+
+    if yielded == 0:
+        raise SystemExit(f"No text rows found for topic='{topic}' in {db}")
 
 
 def build_vocab(texts: List[str]) -> Tuple[dict, dict]:
@@ -168,6 +252,64 @@ class CharDataset(Dataset):
         return x, y
 
 
+class StreamingCharDataset(torch.utils.data.IterableDataset):
+    """IterableDataset that streams data from the database to avoid OOM.
+
+    This dataset reads from the database in batches, tokenizes on-the-fly,
+    and yields training windows without loading everything into memory.
+    """
+
+    def __init__(
+        self,
+        db_path: str,
+        topic: str,
+        encoder: "TokenEncoder",
+        block_size: int,
+        max_rows: Optional[int] = None,
+        batch_size: int = 100,
+    ):
+        self.db_path = db_path
+        self.topic = topic
+        self.encoder = encoder
+        self.block_size = block_size
+        self.max_rows = max_rows
+        self.batch_size = batch_size
+
+    def __iter__(self):
+        """Yield (x, y) training pairs by streaming from database."""
+        token_buffer: List[int] = []
+        sep_tokens = self.encoder.encode("\n\n" if self.encoder.tokenizer == "char" else " <sep> ")
+
+        for text in stream_text_from_db(
+            self.db_path,
+            topic=self.topic,
+            max_rows=self.max_rows,
+            batch_size=self.batch_size,
+        ):
+            # Encode and add to buffer
+            token_buffer.extend(self.encoder.encode(text))
+            token_buffer.extend(sep_tokens)
+
+            # Yield windows as soon as we have enough tokens
+            while len(token_buffer) >= self.block_size + 1:
+                window = token_buffer[: self.block_size + 1]
+                x = torch.tensor(window[:-1], dtype=torch.long)
+                y = torch.tensor(window[1:], dtype=torch.long)
+                yield x, y
+
+                # Slide window by half block_size for overlap (better coverage)
+                slide = max(1, self.block_size // 2)
+                token_buffer = token_buffer[slide:]
+
+        # Yield remaining windows at the end
+        while len(token_buffer) >= self.block_size + 1:
+            window = token_buffer[: self.block_size + 1]
+            x = torch.tensor(window[:-1], dtype=torch.long)
+            y = torch.tensor(window[1:], dtype=torch.long)
+            yield x, y
+            token_buffer = token_buffer[self.block_size // 2:]
+
+
 @dataclass
 class TrainConfig:
     db: str
@@ -188,28 +330,58 @@ class TrainConfig:
     tokenizer: str
     min_freq: int
     vocab_limit: Optional[int]
+    streaming: bool  # Use streaming dataset to avoid OOM on large databases
 
 
 def train(cfg: TrainConfig) -> None:
-    texts = load_text_from_db(cfg.db, topic=cfg.topic, max_rows=cfg.max_rows)
-    encoder = TokenEncoder.from_texts(
-        texts,
-        tokenizer=cfg.tokenizer,
-        min_freq=cfg.min_freq,
-        vocab_limit=cfg.vocab_limit,
-    )
-    # Flatten all texts into a single token stream
-    tokens: List[int] = []
-    sep = "\n\n" if encoder.tokenizer == "char" else " <sep> "
-    for t in texts:
-        tokens.extend(encoder.encode(t))
-        tokens.extend(encoder.encode(sep))
+    if cfg.streaming:
+        # Streaming mode: build vocab from a sample, then stream data during training
+        # This avoids loading the entire dataset into memory
+        print(f"Streaming mode enabled - building vocab from sample of {min(cfg.max_rows, 500)} rows...")
+        sample_texts = list(stream_text_from_db(
+            cfg.db, topic=cfg.topic, max_rows=min(cfg.max_rows, 500), batch_size=100
+        ))
+        if not sample_texts:
+            raise SystemExit(f"No text found for topic='{cfg.topic}' in {cfg.db}")
 
-    dataset = CharDataset(tokens, block_size=cfg.block_size)
-    if len(dataset) == 0:
-        raise SystemExit("Dataset is empty after windowing; increase text size or decrease block_size.")
+        encoder = TokenEncoder.from_texts(
+            sample_texts,
+            tokenizer=cfg.tokenizer,
+            min_freq=cfg.min_freq,
+            vocab_limit=cfg.vocab_limit,
+        )
 
-    loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True)
+        dataset = StreamingCharDataset(
+            db_path=cfg.db,
+            topic=cfg.topic,
+            encoder=encoder,
+            block_size=cfg.block_size,
+            max_rows=cfg.max_rows if cfg.max_rows > 0 else None,
+            batch_size=100,
+        )
+        # IterableDataset doesn't support shuffle; randomness comes from data ordering
+        loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=False)
+    else:
+        # Original non-streaming mode
+        texts = load_text_from_db(cfg.db, topic=cfg.topic, max_rows=cfg.max_rows)
+        encoder = TokenEncoder.from_texts(
+            texts,
+            tokenizer=cfg.tokenizer,
+            min_freq=cfg.min_freq,
+            vocab_limit=cfg.vocab_limit,
+        )
+        # Flatten all texts into a single token stream
+        tokens: List[int] = []
+        sep = "\n\n" if encoder.tokenizer == "char" else " <sep> "
+        for t in texts:
+            tokens.extend(encoder.encode(t))
+            tokens.extend(encoder.encode(sep))
+
+        dataset = CharDataset(tokens, block_size=cfg.block_size)
+        if len(dataset) == 0:
+            raise SystemExit("Dataset is empty after windowing; increase text size or decrease block_size.")
+
+        loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True)
 
     model_cfg = TinyGPTConfig(
         vocab_size=len(encoder.stoi),
@@ -328,6 +500,7 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--tokenizer", choices=["char", "word"], default="char", help="Tokenizer to use (char or word)")
     parser.add_argument("--min-freq", type=int, default=1, help="Minimum token frequency (word tokenizer)")
     parser.add_argument("--vocab-limit", type=int, default=None, help="Maximum vocabulary size (word tokenizer, includes <unk>)")
+    parser.add_argument("--streaming", action="store_true", help="Use streaming dataset to avoid OOM on large databases")
     args = parser.parse_args()
 
     return TrainConfig(
@@ -349,6 +522,7 @@ def parse_args() -> TrainConfig:
         tokenizer=args.tokenizer,
         min_freq=args.min_freq,
         vocab_limit=args.vocab_limit,
+        streaming=args.streaming,
     )
 
 
