@@ -1106,6 +1106,148 @@ def call_mem_db(cmd, *args):
         return str(e), False
 
 
+def fetch_hud_data() -> str:
+    """
+    Fetch the Project HUD data for prompt injection.
+    
+    Returns the HUD as a formatted string showing:
+    - Top 5 OPEN tasks (type=T, choice=OPEN)
+    - Active Mandates (importance=Critical)
+    
+    This is the "Source of Truth" for task context.
+    """
+    hud_script = SCRIPT_DIR / "hooks" / "print-hud.sh"
+    if not hud_script.exists():
+        logger.debug("print-hud.sh not found, skipping HUD injection")
+        return ""
+    
+    try:
+        result = subprocess.run(
+            [str(hud_script)],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+        return ""
+    except Exception as e:
+        logger.warning(f"Failed to fetch HUD: {e}")
+        return ""
+
+
+def check_idea_consolidation(iteration: int, provider: str = "claude", model: str = None, tier: str = "auto") -> bool:
+    """
+    Stream of Consciousness: Periodic check to consolidate Ideas.
+    
+    Every ~10 iterations, scan recent Ideas (type=I) and prompt the LLM
+    to decide which should be promoted to permanent Facts or Decisions.
+    
+    Args:
+        iteration: Current daemon iteration number
+        provider: LLM provider to use
+        model: LLM model override
+        tier: LLM tier for hybrid mode
+    
+    Returns:
+        True if consolidation was performed, False otherwise
+    """
+    # Only run every 10 iterations
+    if iteration % 10 != 0 or iteration == 0:
+        return False
+    
+    logger.info("Stream of Consciousness: Checking recent Ideas for consolidation...")
+    
+    # Query recent Ideas (last hour)
+    ideas_output, success = call_mem_db("query", "t=I", "recent=1h", "limit=10", "--json")
+    if not success or not ideas_output.strip():
+        logger.debug("No recent Ideas to consolidate")
+        return False
+    
+    # Parse Ideas
+    ideas = []
+    for line in ideas_output.strip().split('\n'):
+        if not line.strip():
+            continue
+        try:
+            data = json.loads(line)
+            if isinstance(data, list) and len(data) >= 3:
+                ideas.append({
+                    "type": data[0],
+                    "topic": data[1],
+                    "text": data[2][:200],  # Truncate for prompt
+                })
+        except json.JSONDecodeError:
+            continue
+    
+    if not ideas:
+        logger.debug("No Ideas found in query results")
+        return False
+    
+    logger.info(f"Found {len(ideas)} recent Ideas to review")
+    
+    # Build consolidation prompt
+    ideas_text = "\n".join([f"- [{i['topic']}] {i['text']}" for i in ideas])
+    consolidation_prompt = f"""Review these recent fleeting Ideas (type=I) and decide which should be promoted to permanent memory.
+
+IDEAS:
+{ideas_text}
+
+For each idea worth promoting, respond with JSON actions:
+- For valuable insights: {{"action":"write_memory","type":"f","topic":"<topic>","text":"<refined text>"}}
+- For important decisions: {{"action":"write_memory","type":"d","topic":"<topic>","text":"<decision>","choice":"<option>"}}
+- For ideas to discard: No action needed (they will decay naturally)
+
+Respond ONLY with JSON actions, one per line. If no ideas are worth promoting, respond with:
+{{"action":"done","summary":"No ideas worth promoting"}}"""
+
+    # Call LLM for consolidation decisions
+    response = call_llm(
+        consolidation_prompt,
+        verbose=False,
+        provider=provider,
+        model=model,
+        tier=tier
+    )
+    
+    if not response:
+        logger.warning("No response from LLM for idea consolidation")
+        return False
+    
+    # Parse and execute consolidation actions
+    actions = parse_actions(response)
+    if not actions:
+        logger.debug("No consolidation actions parsed")
+        return True  # Still ran consolidation check
+    
+    promoted_count = 0
+    for action_data in actions:
+        action = action_data.get("action", "")
+        if action == "write_memory":
+            # Execute the promotion
+            t = action_data.get("type", "f")
+            topic = action_data.get("topic", "consolidated")
+            text = action_data.get("text", "")
+            choice = action_data.get("choice", "")
+            
+            args = [f"t={t}", f"topic={topic}", f"text={text}"]
+            if choice:
+                args.append(f"choice={choice}")
+            
+            output, success = call_mem_db("write", *args)
+            if success:
+                promoted_count += 1
+                logger.info(f"Promoted Idea to {t}: {text[:50]}...")
+        elif action == "done":
+            logger.info(f"Consolidation complete: {action_data.get('summary', 'No ideas promoted')}")
+            break
+    
+    if promoted_count > 0:
+        logger.info(f"Stream of Consciousness: Promoted {promoted_count} Ideas to permanent memory")
+    
+    return True
+
+
 def resolve_repo_root(path_str: str) -> Path:
     """Resolve and validate repository root"""
     root = Path(path_str).expanduser().resolve()
@@ -1790,7 +1932,21 @@ def build_prompt(state, repo_root: Path, unrestricted: bool, last_results=None):
     if orch_state is not None:
         orch_system_prompt = ORCHESTRATOR_SYSTEM_PROMPT + "\n" + "=" * 60 + "\n\n"
 
-    prompt = f"""{orch_system_prompt}OBJECTIVE: {state.objective}
+    # Fetch the Project HUD - this is the Source of Truth for tasks and mandates
+    hud_data = fetch_hud_data()
+    hud_section = ""
+    if hud_data:
+        hud_section = f"""
+{hud_data}
+
+IMPORTANT: The HUD above is the SOURCE OF TRUTH for current tasks and mandates.
+- When you complete a task, update it using: {{"action":"write_memory","type":"T","topic":"<topic>","text":"<task>","choice":"DONE"}}
+- Active Mandates MUST be respected in all actions.
+- Query HUD-listed tasks before starting new work.
+
+"""
+
+    prompt = f"""{orch_system_prompt}{hud_section}OBJECTIVE: {state.objective}
 REPO: {repo_root} | MODE: {mode} | ITERATION: {state.iteration}
 
 {orch_context}
@@ -1932,6 +2088,15 @@ def run_daemon(state, repo_root: Path, unrestricted: bool, verbose=False, log_fu
             state.save()
             time.sleep(wait_time)
             continue
+
+        # Stream of Consciousness: Periodic idea consolidation
+        # Every 10 iterations, check if any Ideas should be promoted
+        check_idea_consolidation(
+            state.iteration,
+            provider=state.llm_provider,
+            model=state.llm_model,
+            tier=state.llm_tier
+        )
 
         # Build prompt and call LLM
         prompt = build_prompt(state, repo_root, unrestricted, last_results)

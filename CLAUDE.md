@@ -103,12 +103,18 @@ curl -X POST http://10.0.0.X:8765/llm \
 | Result | `R` | Outcomes of attempts |
 | Lesson | `L` | Learnings from attempts |
 | Phase | `P` | Orchestrator phase transitions |
+| Idea | `I` | Stream of Consciousness fleeting thoughts |
 
 **PHASE glyph details:**
 - `anchor_choice` = transition label (e.g., `IMPLEMENT->AUDIT`, `AUDIT->FIX`)
 - `task_id` = the TODO/GOAL id (e.g., `vv2-001`, `port-003`)
 - `links` = JSON: `{"from": "<phase>", "to": "<phase>", "round": <int>, "error": "<error_signature or 'none'>"}`
 - Use `task=<id>` as a convenient alias for `task_id=<id>`
+
+**IDEA type (Stream of Consciousness):**
+- Automatically captured assistant thoughts with very short decay (~2 hours)
+- Periodically reviewed and promoted to Facts/Decisions or discarded
+- Used by `hooks/msg-assistant.sh` for continuous memory formation
 
 Example:
 ```bash
@@ -117,6 +123,57 @@ Example:
   text="First implementation ready for audit" \
   links='{"from": "IMPLEMENT", "to": "AUDIT", "round": 1, "error": "none"}'
 ```
+
+### Project HUD (Source of Truth)
+
+The Project HUD displays the current state of tasks and mandates:
+
+```bash
+./hooks/print-hud.sh           # ASCII display
+./hooks/print-hud.sh --json    # JSON output for programmatic use
+```
+
+The HUD shows:
+- **OPEN TASKS**: Top 5 tasks with `type=T` and `choice=OPEN`
+- **ACTIVE MANDATES**: Entries with `importance=Critical`
+
+The daemon automatically injects the HUD at the top of every prompt, making it the Source of Truth for:
+- Current work priorities
+- Critical rules that must be followed
+
+### Context Nexus (Priority Scoring)
+
+The Context Nexus system in `task_priority.py` implements intelligent memory scoring:
+
+**Immortal Memories:**
+- `importance=High` or `importance=Critical` entries bypass recency decay
+- These memories always have `recency=1.0` regardless of age
+
+**Task Linking:**
+- Memories linked to the current active task get a 2.0x score multiplier
+- Uses `task_id` field to match against active task
+
+**Mandate Multiplier:**
+- Decision types (`type=d`) get a 1.5x score multiplier
+- Critical importance entries also get this multiplier
+- Ensures important decisions override recent noise
+
+### Stream of Consciousness
+
+The Stream of Consciousness system mimics "working memory":
+
+**Automatic Capture:**
+- `hooks/msg-assistant.sh` records ALL assistant outputs as Ideas (`type=I`)
+- No minimum length/word filters (captures everything)
+
+**Fast Decay:**
+- Ideas have `tau_days=0.1` (~2.4 hours)
+- Highly relevant immediately, but fade quickly if not promoted
+
+**Periodic Consolidation:**
+- Every 10 daemon iterations, the system reviews recent Ideas
+- Prompts LLM: "Which Ideas should become permanent Facts or Decisions?"
+- Promoted ideas are saved permanently; others decay naturally
 
 ### TODO Statuses
 

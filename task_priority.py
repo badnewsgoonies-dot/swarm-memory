@@ -34,6 +34,11 @@ class WeightConfig:
     topic_bonus: float = 0.15
     project_bonus: float = 0.1
     link_bonus: float = 0.08
+    # Context Nexus: multipliers for special memory types
+    active_task_multiplier: float = 2.0  # Boost for memories linked to active task
+    mandate_multiplier: float = 1.5  # Boost for Mandates and Decisions
+    # Stream of Consciousness: Idea type has very short decay
+    idea_tau_days: float = 0.1  # ~2.4 hours for Ideas (type=I)
     risk_keywords: Tuple[str, ...] = field(
         default_factory=lambda: (
             "blocker",
@@ -68,6 +73,7 @@ class Entry:
     project_id: Optional[str]
     scope: Optional[str]
     chat_id: Optional[str]
+    task_id: Optional[str] = None  # Links to TODO/GOAL for task-centric scoring
     embedding_model: Optional[str] = None
     embedding_dim: Optional[int] = None
     embedding: Optional[bytes] = None
@@ -138,23 +144,29 @@ def lexical_similarity(a: str, b: str) -> float:
     return inter / union if union else 0.0
 
 
-def importance_score(label: Optional[str]) -> tuple[float, float]:
+def importance_score(label: Optional[str]) -> tuple[float, float, bool]:
     """
-    Map importance label to score and recency tau multiplier.
+    Map importance label to score, recency tau multiplier, and immortal flag.
 
     Returns:
-        (importance_value, tau_multiplier)
+        (importance_value, tau_multiplier, is_immortal)
+        
+    Immortal memories (High/Critical) bypass recency decay entirely.
     """
     if not label:
-        return 0.3, 1.0
+        return 0.3, 1.0, False
     label = label.lower()
-    if label in ("h", "high", "critical"):
-        return 1.0, 1.6
+    if label in ("critical",):
+        # Critical = Immortal, maximum importance, bypasses decay
+        return 1.0, 1.0, True
+    if label in ("h", "high"):
+        # High = Immortal, high importance, bypasses decay
+        return 1.0, 1.6, True
     if label in ("m", "med", "medium"):
-        return 0.5, 1.25
+        return 0.5, 1.25, False
     if label in ("l", "low"):
-        return 0.1, 1.0
-    return 0.3, 1.0
+        return 0.1, 1.0, False
+    return 0.3, 1.0, False
 
 
 def parse_links(raw: Optional[str]) -> set[str]:
@@ -286,35 +298,83 @@ def priority_score(
     todos: Sequence[Entry],
     weights: WeightConfig,
     now: Optional[datetime] = None,
+    active_task_id: Optional[str] = None,
 ) -> dict:
     """
     Compute priority score and component breakdown for a memory entry.
+
+    Context Nexus Features:
+        - Immortal Memories: High/Critical importance bypasses recency decay
+        - Task Linking: 2.0x multiplier for memories linked to active_task_id
+        - Mandates: 1.5x multiplier for type=d (Decision) or importance=Critical
+        - Stream of Consciousness: type=I (Idea) has very short tau_days
 
     Returns:
         {
             "score": float,
             "components": {"recency": R, "importance": I, "todo": T, "urgency": E},
             "matched_todo": todo_entry or None,
-            "age_days": float
+            "age_days": float,
+            "multipliers": {"task_link": float, "mandate": float},
+            "is_immortal": bool
         }
     """
     now = now or datetime.now(timezone.utc)
     ts = parse_timestamp(entry.timestamp)
     age_days = (now - ts).total_seconds() / 86_400.0
-    imp_value, tau_multiplier = importance_score(entry.importance)
-    recency = temporal_decay_score(ts, now=now, tau_days=weights.tau_days * tau_multiplier)
+    
+    # Get importance score and immortal flag
+    imp_value, tau_multiplier, is_immortal = importance_score(entry.importance)
+    
+    # Determine tau_days based on entry type
+    # Ideas (type=I) have very short decay for Stream of Consciousness
+    if entry.anchor_type == "I":
+        effective_tau = weights.idea_tau_days
+    else:
+        effective_tau = weights.tau_days * tau_multiplier
+    
+    # Calculate recency score
+    # Immortal memories bypass decay entirely
+    if is_immortal:
+        recency = 1.0
+    else:
+        recency = temporal_decay_score(ts, now=now, tau_days=effective_tau)
+    
     todo_alignment, matched = best_todo_alignment(entry, todos, weights)
     urgency = urgency_score(entry, matched, now, weights)
 
-    score = (
+    # Base score calculation
+    base_score = (
         weights.w_recency * recency
         + weights.w_importance * imp_value
         + weights.w_todo_link * todo_alignment
         + weights.w_urgency * urgency
     )
 
+    # Apply Context Nexus multipliers
+    task_link_multiplier = 1.0
+    mandate_multiplier = 1.0
+    
+    # Task Linking: if memory is linked to active task, boost score
+    if active_task_id:
+        # Check if entry's task_id matches active task
+        entry_task_id = getattr(entry, 'task_id', None) if hasattr(entry, 'task_id') else None
+        if entry_task_id and entry_task_id == active_task_id:
+            task_link_multiplier = weights.active_task_multiplier
+        # Also check if topic matches
+        elif entry.topic and active_task_id in str(entry.topic):
+            task_link_multiplier = weights.active_task_multiplier * 0.75  # Partial match
+    
+    # Mandate multiplier: applies to Decisions or Critical importance
+    # These represent important rules/decisions that should override recent thoughts
+    if entry.anchor_type == "d" or (entry.importance and entry.importance.lower() == "critical"):
+        mandate_multiplier = weights.mandate_multiplier
+    
+    # Apply multipliers
+    final_score = base_score * task_link_multiplier * mandate_multiplier
+
     return {
-        "score": float(score),
+        "score": float(final_score),
         "components": {
             "recency": float(recency),
             "importance": float(imp_value),
@@ -323,5 +383,10 @@ def priority_score(
         },
         "matched_todo": matched,
         "age_days": age_days,
+        "multipliers": {
+            "task_link": task_link_multiplier,
+            "mandate": mandate_multiplier,
+        },
+        "is_immortal": is_immortal,
     }
 
