@@ -138,23 +138,28 @@ def lexical_similarity(a: str, b: str) -> float:
     return inter / union if union else 0.0
 
 
-def importance_score(label: Optional[str]) -> tuple[float, float]:
+def importance_score(label: Optional[str]) -> tuple[float, float, bool]:
     """
-    Map importance label to score and recency tau multiplier.
+    Map importance label to score, recency tau multiplier, and immortality flag.
 
     Returns:
-        (importance_value, tau_multiplier)
+        (importance_value, tau_multiplier, is_immortal)
+
+    Immortal memories (H/High/Critical) do not decay over time - they always
+    have recency = 1.0. This ensures "core value" or "dogma" memories carry
+    equal weight regardless of when they were written.
     """
     if not label:
-        return 0.3, 1.0
+        return 0.3, 1.0, False
     label = label.lower()
     if label in ("h", "high", "critical"):
-        return 1.0, 1.6
+        # Immortal: these memories never decay
+        return 1.0, 1.6, True
     if label in ("m", "med", "medium"):
-        return 0.5, 1.25
+        return 0.5, 1.25, False
     if label in ("l", "low"):
-        return 0.1, 1.0
-    return 0.3, 1.0
+        return 0.1, 1.0, False
+    return 0.3, 1.0, False
 
 
 def parse_links(raw: Optional[str]) -> set[str]:
@@ -295,14 +300,22 @@ def priority_score(
             "score": float,
             "components": {"recency": R, "importance": I, "todo": T, "urgency": E},
             "matched_todo": todo_entry or None,
-            "age_days": float
+            "age_days": float,
+            "is_immortal": bool
         }
     """
     now = now or datetime.now(timezone.utc)
     ts = parse_timestamp(entry.timestamp)
     age_days = (now - ts).total_seconds() / 86_400.0
-    imp_value, tau_multiplier = importance_score(entry.importance)
-    recency = temporal_decay_score(ts, now=now, tau_days=weights.tau_days * tau_multiplier)
+    imp_value, tau_multiplier, is_immortal = importance_score(entry.importance)
+
+    # Immortal memories (High/Critical importance) do not decay
+    # This ensures "core value" decisions carry equal weight regardless of age
+    if is_immortal:
+        recency = 1.0
+    else:
+        recency = temporal_decay_score(ts, now=now, tau_days=weights.tau_days * tau_multiplier)
+
     todo_alignment, matched = best_todo_alignment(entry, todos, weights)
     urgency = urgency_score(entry, matched, now, weights)
 
@@ -323,5 +336,6 @@ def priority_score(
         },
         "matched_todo": matched,
         "age_days": age_days,
+        "is_immortal": is_immortal,
     }
 

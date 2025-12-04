@@ -5,7 +5,12 @@ governor.py - Action classification and enforcement for autonomous daemon
 Classifies actions as:
 - ALLOW: Auto-approve safe actions (memory writes f/n/q/a, read-only repo/git, run allowed build commands)
 - ESCALATE: Queue for human review (decisions, consolidations, edits, exec/http)
-- DENY: Block immediately (dangerous operations)
+- DENY: Block immediately (dangerous operations OR memory constraint violations)
+
+Memory Enforcement:
+- Before allowing edit_file, exec, or http_request actions, the Governor searches
+  memory for relevant Decision (d) and Lesson (L) entries that might conflict.
+- If a constraint conflict is detected, the action is DENIED with an explanation.
 
 Unrestricted mode (--unrestricted) ALLOWs everything but still logs to audit_log.
 
@@ -13,7 +18,7 @@ Usage:
     from governor import Governor
     gov = Governor(db_path)
     result = gov.check_action(action_data)
-    # result: {'decision': 'ALLOW'|'ESCALATE'|'DENY', 'reason': '...'}
+    # result: {'decision': 'ALLOW'|'ESCALATE'|'DENY', 'reason': '...', 'constraint_id': int|None}
 
 CLI:
     ./governor.py check '{"action": "write_memory", "type": "f", ...}'
@@ -21,16 +26,21 @@ CLI:
     ./governor.py approve 123      # Approve pending change
     ./governor.py reject 123       # Reject pending change
     ./governor.py audit            # Show audit log
+    ./governor.py constraints      # Show active memory constraints
 """
 
 import argparse
 import json
+import re
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import List, Dict, Any, Optional, Tuple
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
+MEM_DB_SCRIPT = SCRIPT_DIR / "mem-db.sh"
 
 # Action classification rules
 ALLOW_ACTIONS = {
@@ -70,30 +80,227 @@ DENY_ACTIONS = {
 
 
 class Governor:
-    """Action classification and enforcement"""
+    """Action classification, memory enforcement, and safety gatekeeper"""
 
-    def __init__(self, db_path, unrestricted=False):
+    def __init__(self, db_path, unrestricted=False, enforce_memory=True):
         self.db_path = db_path
         self.actor = 'governor'
         self.unrestricted = unrestricted
+        self.enforce_memory = enforce_memory  # Enable memory constraint checking
+
+    def _extract_action_keywords(self, action_data: Dict[str, Any]) -> List[str]:
+        """Extract searchable keywords from an action for constraint matching."""
+        keywords = []
+        action = action_data.get('action', '')
+
+        # Extract from content/text fields
+        if action == 'edit_file':
+            content = action_data.get('content', '')
+            path = action_data.get('path', '')
+            # Extract technology mentions from content
+            tech_patterns = [
+                r'\b(jquery|react|vue|angular|preact|svelte)\b',
+                r'\b(python|javascript|typescript|rust|go|java)\b',
+                r'\b(postgres|mysql|sqlite|mongodb|redis)\b',
+                r'\b(aws|gcp|azure|docker|kubernetes)\b',
+            ]
+            for pattern in tech_patterns:
+                matches = re.findall(pattern, content.lower())
+                keywords.extend(matches)
+            # Also check the file path
+            if path:
+                keywords.append(path.split('/')[-1])  # filename
+
+        elif action == 'exec':
+            cmd = action_data.get('cmd', '')
+            # Extract command name and key arguments
+            parts = cmd.split()
+            if parts:
+                keywords.append(parts[0])  # command name
+                # Look for package names, etc.
+                for part in parts[1:5]:
+                    if not part.startswith('-'):
+                        keywords.append(part)
+
+        elif action == 'http_request':
+            url = action_data.get('url', '')
+            # Extract domain
+            import re as re_mod
+            domain_match = re_mod.search(r'https?://([^/]+)', url)
+            if domain_match:
+                keywords.append(domain_match.group(1))
+
+        return [k.lower() for k in keywords if k and len(k) > 2]
+
+    def _search_memory_constraints(self, keywords: List[str]) -> List[Dict[str, Any]]:
+        """Search memory for Decision/Lesson entries that might conflict."""
+        if not keywords:
+            return []
+
+        constraints = []
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Search for decisions and lessons containing any of the keywords
+        for keyword in keywords[:10]:  # Limit to first 10 keywords
+            try:
+                cursor.execute("""
+                    SELECT id, anchor_type, anchor_topic, text, anchor_choice, importance
+                    FROM chunks
+                    WHERE anchor_type IN ('d', 'D', 'L')
+                      AND (text LIKE ? OR anchor_topic LIKE ?)
+                    ORDER BY timestamp DESC
+                    LIMIT 5
+                """, (f'%{keyword}%', f'%{keyword}%'))
+
+                for row in cursor.fetchall():
+                    constraints.append({
+                        'id': row[0],
+                        'type': row[1],
+                        'topic': row[2],
+                        'text': row[3],
+                        'choice': row[4],
+                        'importance': row[5],
+                        'matched_keyword': keyword
+                    })
+            except sqlite3.Error:
+                continue
+
+        conn.close()
+
+        # Deduplicate by ID
+        seen_ids = set()
+        unique_constraints = []
+        for c in constraints:
+            if c['id'] not in seen_ids:
+                seen_ids.add(c['id'])
+                unique_constraints.append(c)
+
+        return unique_constraints
+
+    def _check_constraint_violation(
+        self,
+        action_data: Dict[str, Any],
+        constraints: List[Dict[str, Any]]
+    ) -> Optional[Tuple[Dict[str, Any], str]]:
+        """
+        Check if action violates any memory constraints.
+
+        Returns:
+            (constraint, reason) if violation detected, None otherwise
+        """
+        if not constraints:
+            return None
+
+        action = action_data.get('action', '')
+
+        # Negative keywords that indicate a prohibition
+        prohibition_patterns = [
+            r'\b(ban|banned|prohibit|forbidden|never|avoid|don\'t|do not|must not)\b',
+            r'\b(deprecated|removed|replaced|migrated away from)\b',
+            r'\b(security risk|vulnerability|unsafe|insecure)\b',
+        ]
+
+        for constraint in constraints:
+            text = (constraint.get('text') or '').lower()
+            choice = (constraint.get('choice') or '').lower()
+
+            # Check if constraint contains prohibition language
+            is_prohibition = any(
+                re.search(pattern, text, re.IGNORECASE)
+                for pattern in prohibition_patterns
+            )
+
+            if is_prohibition:
+                keyword = constraint.get('matched_keyword', '')
+                # Check if the action is trying to use the prohibited thing
+                if action == 'edit_file':
+                    content = action_data.get('content', '').lower()
+                    if keyword in content:
+                        return (
+                            constraint,
+                            f"Memory constraint #{constraint['id']} prohibits '{keyword}': {text[:100]}..."
+                        )
+                elif action == 'exec':
+                    cmd = action_data.get('cmd', '').lower()
+                    if keyword in cmd:
+                        return (
+                            constraint,
+                            f"Memory constraint #{constraint['id']} prohibits '{keyword}': {text[:100]}..."
+                        )
+
+        return None
+
+    def check_memory_constraints(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Check if action violates any memory constraints.
+
+        Returns:
+            {'violation': bool, 'constraint': dict|None, 'reason': str}
+        """
+        if not self.enforce_memory:
+            return {'violation': False, 'constraint': None, 'reason': 'Memory enforcement disabled'}
+
+        # Only check certain action types
+        action = action_data.get('action', '')
+        if action not in ('edit_file', 'exec', 'http_request'):
+            return {'violation': False, 'constraint': None, 'reason': 'Action type not subject to constraint check'}
+
+        # Extract keywords and search for constraints
+        keywords = self._extract_action_keywords(action_data)
+        if not keywords:
+            return {'violation': False, 'constraint': None, 'reason': 'No searchable keywords found'}
+
+        constraints = self._search_memory_constraints(keywords)
+        if not constraints:
+            return {'violation': False, 'constraint': None, 'reason': 'No relevant constraints found'}
+
+        # Check for violations
+        violation = self._check_constraint_violation(action_data, constraints)
+        if violation:
+            constraint, reason = violation
+            return {'violation': True, 'constraint': constraint, 'reason': reason}
+
+        return {
+            'violation': False,
+            'constraint': None,
+            'reason': f'No violations found (checked {len(constraints)} constraints)',
+            'checked_constraints': len(constraints)
+        }
 
     def check_action(self, action_data):
         """
         Check if action is allowed.
-        Returns: {'decision': 'ALLOW'|'ESCALATE'|'DENY', 'reason': str, 'pending_id': int|None}
+        Returns: {'decision': 'ALLOW'|'ESCALATE'|'DENY', 'reason': str, 'pending_id': int|None, 'constraint_id': int|None}
         """
         action = action_data.get('action', '').lower()
 
-        # Unrestricted mode: allow but log
-        if self.unrestricted:
-            self._log_audit(action, action_data, 'ALLOW', 'Unrestricted mode')
-            return {'decision': 'ALLOW', 'reason': 'Unrestricted mode'}
-
-        # Check DENY list first
+        # Check DENY list first (always, even in unrestricted mode)
         for deny_action, reason in DENY_ACTIONS.items():
             if deny_action in action.lower():
                 self._log_audit(action, action_data, 'DENY', reason)
-                return {'decision': 'DENY', 'reason': reason}
+                return {'decision': 'DENY', 'reason': reason, 'constraint_id': None}
+
+        # Check memory constraints BEFORE unrestricted bypass
+        # Memory constraints are enforced even in unrestricted mode
+        # to ensure core architectural decisions are respected
+        if self.enforce_memory and action in ('edit_file', 'exec', 'http_request'):
+            constraint_result = self.check_memory_constraints(action_data)
+            if constraint_result.get('violation'):
+                constraint = constraint_result.get('constraint', {})
+                reason = f"MEMORY CONSTRAINT VIOLATION: {constraint_result.get('reason', 'Unknown')}"
+                self._log_audit(action, action_data, 'DENY', reason)
+                return {
+                    'decision': 'DENY',
+                    'reason': reason,
+                    'constraint_id': constraint.get('id'),
+                    'constraint_text': constraint.get('text', '')[:200]
+                }
+
+        # Unrestricted mode: allow but log (after constraint check)
+        if self.unrestricted:
+            self._log_audit(action, action_data, 'ALLOW', 'Unrestricted mode')
+            return {'decision': 'ALLOW', 'reason': 'Unrestricted mode', 'constraint_id': None}
 
         # Check ESCALATE conditions
         if action == 'write_memory':
@@ -258,6 +465,45 @@ class Governor:
             for r in rows
         ]
 
+    def get_constraints(self, limit=20) -> List[Dict[str, Any]]:
+        """Get active memory constraints (Decision and Lesson entries)."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, anchor_type, anchor_topic, text, anchor_choice, importance, timestamp
+            FROM chunks
+            WHERE anchor_type IN ('d', 'D', 'L')
+            ORDER BY
+                CASE importance
+                    WHEN 'H' THEN 1
+                    WHEN 'M' THEN 2
+                    WHEN 'L' THEN 3
+                    ELSE 4
+                END,
+                timestamp DESC
+            LIMIT ?
+        """, (limit,))
+        rows = cursor.fetchall()
+        conn.close()
+
+        type_labels = {
+            'd': 'Decision', 'D': 'Decision',
+            'L': 'Lesson'
+        }
+
+        return [
+            {
+                'id': r[0],
+                'type': type_labels.get(r[1], r[1]),
+                'topic': r[2],
+                'text': r[3],
+                'choice': r[4],
+                'importance': r[5] or 'M',
+                'timestamp': r[6]
+            }
+            for r in rows
+        ]
+
 
 def main():
     parser = argparse.ArgumentParser(description='Governor - Action enforcement')
@@ -285,6 +531,10 @@ def main():
     # audit command
     audit_parser = subparsers.add_parser('audit', help='Show audit log')
     audit_parser.add_argument('--limit', type=int, default=20, help='Number of entries')
+
+    # constraints command
+    constraints_parser = subparsers.add_parser('constraints', help='Show active memory constraints')
+    constraints_parser.add_argument('--limit', type=int, default=20, help='Number of constraints')
 
     args = parser.parse_args()
     gov = Governor(args.db, unrestricted=args.unrestricted)
@@ -335,6 +585,25 @@ def main():
                 }.get(e['decision'], '')
                 print(f"  {e['timestamp'][:19]} {decision_color}[{e['decision']}]\033[0m {e['action_type']}")
                 print(f"      {e['reason']}")
+                print()
+
+    elif args.command == 'constraints':
+        constraints = gov.get_constraints(args.limit)
+        if not constraints:
+            print("No memory constraints found (no Decision/Lesson entries).")
+        else:
+            print(f"Active Memory Constraints ({len(constraints)} entries):\n")
+            for c in constraints:
+                importance_color = {
+                    'H': '\033[31m',  # red for high
+                    'M': '\033[33m',  # yellow for medium
+                    'L': '\033[32m',  # green for low
+                }.get(c['importance'], '')
+                type_label = c['type']
+                print(f"  [{c['id']}] {importance_color}[{c['importance']}]\033[0m {type_label}: {c['topic']}")
+                print(f"      {c['text'][:100]}...")
+                if c['choice']:
+                    print(f"      Choice: {c['choice']}")
                 print()
 
     else:

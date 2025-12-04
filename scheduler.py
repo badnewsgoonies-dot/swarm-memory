@@ -106,7 +106,8 @@ def has_open_tasks() -> bool:
     return bool(row)
 
 
-def launch_planner(tier: str, dry_run: bool = False) -> int:
+def launch_planner(tier: str, dry_run: bool = False) -> Optional[subprocess.Popen]:
+    """Launch planner asynchronously using Popen to avoid blocking the scheduler."""
     cmd = [
         "python3",
         str(SCRIPT_DIR / "agent_loop.py"),
@@ -117,9 +118,8 @@ def launch_planner(tier: str, dry_run: bool = False) -> int:
     ]
     logging.info("Planner: %s", " ".join(cmd))
     if dry_run:
-        return 0
-    result = subprocess.run(cmd, cwd=SCRIPT_DIR)
-    return result.returncode
+        return None
+    return subprocess.Popen(cmd, cwd=SCRIPT_DIR)
 
 
 def launch_orchestrator(task_id: str, args) -> subprocess.Popen:
@@ -172,6 +172,7 @@ def main():
         return 1
 
     running_orchestrators: List[Dict[str, object]] = []
+    running_planner: Optional[Dict[str, object]] = None
 
     try:
         while True:
@@ -189,6 +190,17 @@ def main():
                 else:
                     logging.info("Orchestrator for %s exited with code %s", entry["task_id"], ret)
             running_orchestrators = still_running
+
+            # Check if planner has finished
+            if running_planner is not None:
+                planner_proc: subprocess.Popen = running_planner["proc"]  # type: ignore[assignment]
+                ret = planner_proc.poll()
+                if ret is not None:
+                    if ret != 0:
+                        logging.error("Planner exited with code %s", ret)
+                    else:
+                        logging.info("Planner completed successfully")
+                    running_planner = None
 
             # Prefer starting orchestrator tasks first
             orch_candidate = find_orchestrate_candidate(args.orchestrate_prefix)
@@ -209,11 +221,14 @@ def main():
                     time.sleep(args.interval)
                     continue
 
-            # Planner lane
-            if has_open_tasks():
-                rc = launch_planner(args.planner_tier, dry_run=args.dry_run)
-                if rc != 0:
-                    logging.error("Planner exited with code %s", rc)
+            # Planner lane (non-blocking)
+            if running_planner is None and has_open_tasks():
+                planner_proc = launch_planner(args.planner_tier, dry_run=args.dry_run)
+                if planner_proc is not None:
+                    running_planner = {"proc": planner_proc}
+                    logging.info("Planner started (PID %s)", planner_proc.pid)
+            elif running_planner is not None:
+                logging.debug("Planner already running (PID %s)", running_planner["proc"].pid)  # type: ignore[union-attr]
             else:
                 logging.info("No OPEN tasks found.")
 
@@ -223,6 +238,15 @@ def main():
             time.sleep(args.interval)
     except KeyboardInterrupt:
         logging.info("Scheduler interrupted, exiting.")
+        # Cleanup: terminate running processes gracefully
+        if running_planner is not None:
+            planner_proc = running_planner["proc"]  # type: ignore[assignment]
+            logging.info("Terminating planner (PID %s)", planner_proc.pid)
+            planner_proc.terminate()
+        for entry in running_orchestrators:
+            proc = entry["proc"]  # type: ignore[assignment]
+            logging.info("Terminating orchestrator for %s (PID %s)", entry["task_id"], proc.pid)
+            proc.terminate()
     return 0
 
 
