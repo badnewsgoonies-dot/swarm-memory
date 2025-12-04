@@ -3,7 +3,8 @@
 ## Project Structure & Module Organization
 - Core memory assets: `anchors.jsonl` (append-only glyph log) and `memory.db` (SQLite). Do not hand-edit; use the CLIs.
 - Shell entrypoints: `mem-db.sh` (init/migrate/sync/query/render/embed/semantic/consolidate/prune), `mem-search.sh` (filters or DB delegation), and `head-with-memory.sh` (inject glyphs into prompts).
-- Python helpers: `mem-sync.py` (anchors → DB), `mem-embed.py` (vector generation), `mem-semantic.py` (semantic search), `mem-consolidate.py` (LLM-based consolidation), plus `temporal_decay.py` (scoring) and `swarm_daemon.py` (daemon).
+- Python helpers: `mem-sync.py` (anchors → DB), `mem-embed.py` (vector generation), `mem-semantic.py` (semantic search), `mem-consolidate.py` (LLM-based consolidation), plus `temporal_decay.py` (scoring), `task_priority.py` (priority scoring), `context_nexus.py` (unified HUD builder), and `swarm_daemon.py` (daemon).
+- Context Nexus (`context_nexus.py`): Builds unified context bundles for agent prompts with task-centric HUD, mandates, lessons, and scored memories.
 - See `CLAUDE.md` for the memory-first workflow.
 
 ## Build, Test, and Development Commands
@@ -57,6 +58,26 @@ When setting status to BLOCKED, agents MUST also log a reason:
 - Workers set status to BLOCKED on failure, never revert BLOCKED to OPEN
 - Only humans or manager agents with explicit intent may reopen blocked tasks
 
+## Working Memory (Ideas)
+
+Ideas (`I` type) are short-term memory with fast decay (~30min tau). They're auto-captured from assistant messages and consolidated into long-term memory.
+
+### Idea Consolidation
+- Runs every 10 daemon iterations and at task completion
+- LLM analyzes Ideas and promotes valuable ones to F/D/L types
+- Discards noise (greetings, status updates, repetitive content)
+
+### Querying Ideas
+```bash
+./mem-db.sh query t=I recent=1h           # Recent ideas
+./mem-db.sh query t=I recent=24h limit=50 # All unconsolidated ideas
+```
+
+### Consolidation Triggers
+- Periodic: Every 10 iterations in `swarm_daemon.py`
+- Completion: When daemon finishes (DONE/BLOCKED status)
+- Manual: Can call `consolidate_ideas()` directly
+
 ## Coding Style & Naming Conventions
 - Python: PEP 8, 4-space indents, argparse-based CLIs with docstrings; prefer pure functions and explicit error messages. Keep embeddings model metadata (`embedding_model`, `embedding_dim`) consistent with `MODELS` in `mem-embed.py`.
 - Bash: `set -euo pipefail`, lowercase functions, quote variables, and accept filters as `key=value` to match `mem-search.sh`/`mem-db.sh`.
@@ -66,6 +87,7 @@ When setting status to BLOCKED, agents MUST also log a reason:
 - No formal test suite; smoke: `./mem-db.sh status`, `./mem-db.sh query limit=3`, `./mem-semantic.py "test" --limit 3 --json`.
 - Run `./mem-db.sh sync --dry-run` after ingestion changes, and `./mem-db.sh embed --dry-run` after embedding tweaks to confirm selection.
 - Validate consolidation with `./mem-db.sh consolidate --recent --dry-run` before enabling writes.
+- Test Context Nexus HUD: `python3 context_nexus.py --task <task-id> --topic <topic>` or `python3 context_nexus.py --json` for JSON output.
 
 ## Commit & Pull Request Guidelines
 - Commit messages in history are short, imperative, and specific (e.g., `Add hierarchical retrieval + daemon audit fixes (Phase 3)`). Match that tone; group related changes per commit.

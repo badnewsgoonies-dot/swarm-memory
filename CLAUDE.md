@@ -104,6 +104,11 @@ curl -X POST http://10.0.0.X:8765/llm \
 | Lesson | `L` | Learnings from attempts |
 | Phase | `P` | Orchestrator phase transitions |
 
+**Short-term memory (uppercase):**
+| Type | Letter | Use for |
+|------|--------|---------|
+| Idea | `I` | Fleeting thoughts, auto-captured from assistant messages |
+
 **PHASE glyph details:**
 - `anchor_choice` = transition label (e.g., `IMPLEMENT->AUDIT`, `AUDIT->FIX`)
 - `task_id` = the TODO/GOAL id (e.g., `vv2-001`, `port-003`)
@@ -252,6 +257,74 @@ User prompts and assistant responses are automatically captured to memory via ho
 - Choice field: `user` or `assistant`
 - Scope: `chat` (session-specific)
 
+## Working Memory (Idea Glyphs)
+
+The memory system includes short-term "Idea" glyphs that capture fleeting thoughts and are automatically consolidated into long-term memory.
+
+### How Ideas Work
+
+1. **Auto-capture**: Assistant messages are recorded as Idea glyphs (type `I`)
+2. **Fast decay**: Ideas have ~30 minute tau decay (vs 7 days for normal memories)
+3. **Expiration**: Ideas older than 4 hours are ignored in context retrieval
+4. **Consolidation**: Ideas are automatically promoted to Facts/Decisions/Lessons
+
+### Automatic Recording
+
+Every assistant message (≥100 chars) is recorded as an Idea glyph with:
+- `anchor_type = 'I'`
+- `anchor_topic = 'session:<session_id>'`
+- `anchor_choice = 'fleeting'`
+- Rate limited: max 1 Idea per 30 seconds per session
+
+### Consolidation Process
+
+The consolidator runs:
+- Every 10 daemon iterations
+- When a task completes (DONE or BLOCKED)
+
+The LLM analyzes recent Ideas and decides:
+- **FACT (F)**: Learned information worth keeping
+- **DECISION (D)**: Rules, policies, constraints (becomes a MANDATE)
+- **LESSON (L)**: Learnings from attempts or failures
+- **Discard**: Noise, greetings, status updates
+
+### Querying Ideas
+
+```bash
+# Recent ideas (last hour)
+./mem-db.sh query t=I recent=1h
+
+# Ideas for a specific session
+./mem-db.sh query t=I topic=session:abc12345
+
+# All unconsolidated ideas
+./mem-db.sh query t=I recent=24h limit=50
+```
+
+### Why Ideas Exist
+
+Instead of:
+- Manually saying "please remember this"
+- Losing important context when sessions end
+- Flooding long-term memory with noise
+
+Ideas provide:
+- Automatic capture of potentially useful information
+- Fast decay so old ideas don't clutter context
+- Intelligent consolidation to long-term memory
+- No need to explicitly mark things as important
+
+### Manual Promotion
+
+If you want to immediately promote something to long-term memory:
+```bash
+# Write directly as a Decision (won't auto-decay)
+./mem-db.sh write t=d topic=my-topic text="Important rule here" importance=H
+
+# Write as a Lesson
+./mem-db.sh write t=L topic=my-topic text="What I learned" importance=M
+```
+
 ## Architecture
 
 ### Core Components
@@ -378,6 +451,67 @@ Prefix your objective with "ORCHESTRATE:" to enable orchestration mode:
 3. **FIX phase** (if audit fails): Spawns sub-daemon to fix issues
 4. **AUDIT phase** (retry): Re-audits after fix
 5. **DONE**: Completes after audit passes or max rounds reached
+
+### Context Nexus & HUD
+
+The daemon uses a unified Context Nexus system to provide every agent step with a consistent, task-centric, time-aware view of the world.
+
+**What it provides:**
+- **HUD Banner**: Appears at the very top of every prompt
+- **Current time**: UTC timestamp for temporal awareness
+- **Active task**: The currently executing TODO/GOAL with topic, importance, status
+- **Task queue**: Next 5 OPEN tasks waiting for execution
+- **Mandates**: High-importance decisions that must be respected
+- **Relevant lessons**: Task-specific and global lessons from memory
+
+**HUD Example:**
+```
+==============================================================================
+🕒 TIME
+==============================================================================
+Now: 2025-12-04T03:21:00Z
+
+==============================================================================
+📋 OFFICIAL TASK HUD
+==============================================================================
+[ACTIVE] orch-test-001 | topic=orch-test | importance=M
+        ORCHESTRATE: Run pnpm build in vale-village-v2 and verify success.
+
+[QUEUE]
+[ ] port-004  | VV2-port | H | Port BattleView.tsx from v1 to v2
+[ ] vv2-002   | VV2      | H | Port inventorySlice to Zustand
+
+==============================================================================
+🧱 MANDATES / DECISIONS
+==============================================================================
+- [D] VV2: Do not change DB schema without human approval.
+- [D] VV2: Use Preact + Zustand for v2 UI, not React.
+
+==============================================================================
+📚 RELEVANT LESSONS
+==============================================================================
+- [L] VV2: When integrating Zustand + immer, always install immer explicitly.
+- [L] VV2-port: When porting components, review version change logs first.
+```
+
+**CLI Testing:**
+```bash
+# Test HUD generation directly
+python3 context_nexus.py --task orch-test-001 --topic orch-test
+
+# Output as JSON for programmatic use
+python3 context_nexus.py --task orch-test-001 --json
+
+# Check with a specific memory database
+python3 context_nexus.py --db /path/to/memory.db --task my-task-001
+```
+
+**Scoring Algorithm:**
+The Context Nexus uses a unified scoring function that combines:
+- **Importance**: H=3.0, M=2.0, L=1.0 (H importance memories are "immortal" - no decay)
+- **Time decay**: exp(-age_days/tau) where tau=7 days (disabled for H importance)
+- **Task alignment**: 5x boost for memories directly linked to active task
+- **Mandate bonus**: 3x for decisions, 2.5x for lessons
 
 ### Embeddings
 
