@@ -4,6 +4,8 @@ __pycache__/
 daemon.log
 daemon_state.json
 daemon.kill
+notify_state.json
+notify_daemon.kill
 .claude/
 .claude-tmp/
 .claude.json
