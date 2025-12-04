@@ -393,17 +393,17 @@ def priority_score(
         # Check if entry is linked to the active task
         # Use word boundary matching to avoid false positives (e.g., 'task1' matching 'task123')
         raw_links = entry.links or ""
-        # Check for exact match with word boundaries in raw links
+        
+        # Check for exact match with word/delimiter boundaries in raw links
+        # Handles comma-separated, space-separated, and JSON array formats
         import re
-        link_pattern = r'(?:^|[,\s\[\]"\'{}])' + re.escape(active_task_id) + r'(?:$|[,\s\[\]"\'{}])'
+        # Pattern matches the task ID surrounded by common delimiters or start/end of string
+        link_pattern = r'(?:^|[,\s\[\]"\'{};:|])' + re.escape(active_task_id) + r'(?:$|[,\s\[\]"\'{};:|])'
         if re.search(link_pattern, raw_links):
             task_boost = weights.active_task_boost
         
-        # Also check parsed links for exact match
-        if not task_boost:
-            entry_links = parse_links(entry.links)
-            if active_task_id in entry_links:
-                task_boost = weights.active_task_boost
+        # Note: We do NOT use parse_links here because it tokenizes by word boundaries,
+        # which would cause false positives (e.g., 'task' matching 'task-123' after tokenization).
         
         # Check topic for exact match (case-insensitive)
         if not task_boost and entry.topic:
