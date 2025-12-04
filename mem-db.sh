@@ -24,7 +24,7 @@
 #   ./mem-db.sh health                # Show health dashboard with diagnostics
 #
 # Query filters (same syntax as mem-search.sh):
-#   t=d              # type = decision (d/q/a/f/n/c, T/G/M/R/L for task types, or P for phase)
+#   t=d              # type = decision (d/q/a/f/n/c, T/G/M/R/L for task types, P for phase, I for idea)
 #   topic=memory     # exact topic match
 #   task_id=vv-001   # filter by linked task ID (for attempts/results/lessons)
 #   text=keyword     # text contains keyword (case-insensitive)
@@ -39,6 +39,7 @@
 #   role=architect   # exact agent role match
 #   visibility=public # visibility filter (public/private/internal)
 #   project=myproj   # exact project ID match
+#   importance=h,critical # importance filter (h/m/l, high/medium/low, critical)
 #   limit=10         # max results (default: 20)
 #   --json           # output as JSONL arrays
 #
@@ -572,6 +573,15 @@ for f in filters:
     elif key == 'project':
         params['project'] = val
         where_clauses.append("project_id = :project")
+    elif key == 'importance':
+        # Support multiple values: importance=h,critical -> IN clause
+        vals = [v.strip().lower() for v in val.split(',')]
+        if len(vals) == 1:
+            params['importance'] = vals[0]
+            where_clauses.append("LOWER(importance) = :importance")
+        else:
+            placeholders = ','.join(f"'{v}'" for v in vals)
+            where_clauses.append(f"LOWER(importance) IN ({placeholders})")
     elif key == 'recent':
         import re
         match = re.match(r'^(\d+)([hdwm])$', val.strip().lower())
@@ -1218,6 +1228,15 @@ for f in filters:
     elif key == 'project':
         params['project'] = val
         where_clauses.append("project_id = :project")
+    elif key == 'importance':
+        # Support multiple values: importance=h,critical -> IN clause
+        vals = [v.strip().lower() for v in val.split(',')]
+        if len(vals) == 1:
+            params['importance'] = vals[0]
+            where_clauses.append("LOWER(importance) = :importance")
+        else:
+            placeholders = ','.join(f"'{v}'" for v in vals)
+            where_clauses.append(f"LOWER(importance) IN ({placeholders})")
     elif key == 'recent':
         import re
         match = re.match(r'^(\d+)([hdwm])$', val.strip().lower())

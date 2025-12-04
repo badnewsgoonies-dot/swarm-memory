@@ -1010,3 +1010,4 @@
 ["c", "conversation", "commit and ppppppppppppppppppppush", "user", null, "2025-12-04T13:12:52Z", "89a8ed00", "hook-UserPromptSubmit", null, null, null, null, null]
 ["I", "working-memory", "Test idea from stream of consciousness", null, null, "2025-12-04T15:15:55Z", null, null, null, null, null, null, null]
 ["T", "testing", "Test task for HUD display", "OPEN", null, "2025-12-04T15:16:12Z", null, null, null, null, null, null, null]
+["f", "test", "Critical constraint: Always use TypeScript", null, null, "2025-12-04T15:23:48Z", null, null, "critical", null, null, null, null]

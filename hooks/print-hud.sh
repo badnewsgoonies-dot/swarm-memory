@@ -38,10 +38,11 @@ OPEN_TODOS=$("$MEM_DB" query t=T choice=OPEN limit=5 --json 2>/dev/null || echo 
 # Fetch top 5 OPEN GOALs (anchor_type=G, anchor_choice=OPEN)
 OPEN_GOALS=$("$MEM_DB" query t=G choice=OPEN limit=5 --json 2>/dev/null || echo "")
 
-# Fetch Critical/MANDATE importance memories (any type)
-# Query for importance containing 'critical', 'mandate', 'h', or 'high'
-CRITICAL_MEMORIES=$("$MEM_DB" query text=MANDATE limit=5 --json 2>/dev/null || echo "")
-HIGH_IMP_MEMORIES=$("$MEM_DB" query text=critical limit=5 --json 2>/dev/null || echo "")
+# Fetch Critical/High importance memories (any type) - "MANDATE" level
+# These are the "immortal" memories that should always be visible
+CRITICAL_MEMORIES=$("$MEM_DB" query importance=h,critical,high limit=5 --json 2>/dev/null || echo "")
+# Also search for MANDATE keyword in text for backwards compatibility
+MANDATE_MEMORIES=$("$MEM_DB" query text=MANDATE limit=5 --json 2>/dev/null || echo "")
 
 # =============================================================================
 # JSON OUTPUT
@@ -57,7 +58,7 @@ if [[ "$JSON_OUTPUT" == "1" ]]; then
     "goals": $(echo "$OPEN_GOALS" | grep -v "^$" | head -5 | jq -s '.' 2>/dev/null || echo "[]")
   },
   "critical_memories": $(echo "$CRITICAL_MEMORIES
-$HIGH_IMP_MEMORIES" | grep -v "^$" | head -5 | jq -s '.' 2>/dev/null || echo "[]")
+$MANDATE_MEMORIES" | grep -v "^$" | head -5 | jq -s '.' 2>/dev/null || echo "[]")
 }
 EOF
     exit 0
@@ -82,7 +83,7 @@ extract_text() {
 TODO_COUNT=$(echo "$OPEN_TODOS" | grep -c "^\[" 2>/dev/null) || TODO_COUNT=0
 GOAL_COUNT=$(echo "$OPEN_GOALS" | grep -c "^\[" 2>/dev/null) || GOAL_COUNT=0
 CRIT_COUNT=$(echo "$CRITICAL_MEMORIES
-$HIGH_IMP_MEMORIES" | grep -c "^\[" 2>/dev/null) || CRIT_COUNT=0
+$MANDATE_MEMORIES" | grep -c "^\[" 2>/dev/null) || CRIT_COUNT=0
 
 # =============================================================================
 # COMPACT OUTPUT
@@ -111,6 +112,10 @@ if [[ -n "$OPEN_TODOS" ]] && [[ "$TODO_COUNT" -gt 0 ]]; then
     TASK_NUM=1
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
+        # JSON array indices from mem-db.sh query --json:
+        # [0]=type, [1]=topic, [2]=text, [3]=choice, [4]=rationale, [5]=ts,
+        # [6]=session, [7]=source, [8]=scope, [9]=chat_id, [10]=role,
+        # [11]=visibility, [12]=project, [13]=importance, [14]=due, [15]=links, [16]=task_id, [17]=metric
         topic=$(echo "$line" | jq -r '.[1] // "?"' 2>/dev/null)
         text=$(echo "$line" | jq -r '.[2] // ""' 2>/dev/null | head -c 55)
         task_id=$(echo "$line" | jq -r '.[16] // ""' 2>/dev/null)
@@ -140,7 +145,7 @@ fi
 
 # Critical Memories / Mandates Section
 ALL_CRITICAL="$CRITICAL_MEMORIES
-$HIGH_IMP_MEMORIES"
+$MANDATE_MEMORIES"
 UNIQUE_CRITICAL=$(echo "$ALL_CRITICAL" | grep "^\[" | sort -u | head -5) || UNIQUE_CRITICAL=""
 CRIT_ACTUAL_COUNT=$(echo "$UNIQUE_CRITICAL" | grep -c "^\[" 2>/dev/null) || CRIT_ACTUAL_COUNT=0
 
