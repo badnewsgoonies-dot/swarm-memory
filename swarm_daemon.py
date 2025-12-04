@@ -1254,6 +1254,140 @@ def call_mem_db(cmd, *args):
         return str(e), False
 
 
+# =============================================================================
+# MEMORY RETRIEVAL WITH ACTIVE VOICE FRAMING
+# =============================================================================
+
+# Type prefixes for active voice framing
+# Decision and Lesson types are framed as hard constraints
+ACTIVE_VOICE_PREFIXES = {
+    'd': '[CONSTRAINT]',      # Decisions are binding constraints
+    'D': '[CONSTRAINT]',
+    'L': '[MANDATE]',         # Lessons learned are mandates
+    'f': '[FACT]',            # Facts are informational
+    'F': '[FACT]',
+    'n': '[NOTE]',            # Notes are context
+    'N': '[NOTE]',
+    'q': '[OPEN QUESTION]',   # Questions need resolution
+    'Q': '[OPEN QUESTION]',
+    'a': '[ACTION]',          # Actions taken
+    'A': '[ACTION]',
+    'P': '[PHASE]',           # Orchestration phases
+    'R': '[RESULT]',          # Results/outcomes
+    'T': '[TODO]',            # Pending tasks
+    'G': '[GOAL]',            # High-level goals
+    'M': '[ATTEMPT]',         # Work attempts
+}
+
+
+def fetch_memories_with_metadata(limit: int = 20, recent: str = "24h") -> List[Dict[str, Any]]:
+    """
+    Fetch memories with full metadata for importance-based splitting.
+
+    Returns list of dicts with: type, topic, text, importance, choice, timestamp
+    """
+    output, ok = call_mem_db("query", f"recent={recent}", f"limit={limit}", "--json")
+    if not ok or not output.strip():
+        return []
+
+    memories = []
+    for line in output.strip().split('\n'):
+        if not line.strip():
+            continue
+        try:
+            # Parse JSONL output - each line is an array or dict
+            row = json.loads(line)
+            if isinstance(row, list) and len(row) >= 8:
+                # Array format: [type, topic, text, choice, rationale, ts, session, source, ...]
+                memories.append({
+                    'type': row[0] or 'n',
+                    'topic': row[1] or '',
+                    'text': row[2] or '',
+                    'choice': row[3] or '',
+                    'timestamp': row[5] or '',
+                    'importance': row[8] if len(row) > 8 else 'M',
+                })
+            elif isinstance(row, dict):
+                memories.append({
+                    'type': row.get('anchor_type', 'n'),
+                    'topic': row.get('anchor_topic', ''),
+                    'text': row.get('text', ''),
+                    'choice': row.get('anchor_choice', ''),
+                    'timestamp': row.get('timestamp', ''),
+                    'importance': row.get('importance', 'M'),
+                })
+        except (json.JSONDecodeError, IndexError, TypeError):
+            continue
+
+    return memories
+
+
+def render_memory_with_active_voice(mem: Dict[str, Any]) -> str:
+    """
+    Render a single memory entry with active voice prefix.
+
+    Decision and Lesson types get CONSTRAINT/MANDATE prefix to signal
+    they are binding rules, not just passive information.
+    """
+    mem_type = mem.get('type', 'n')
+    prefix = ACTIVE_VOICE_PREFIXES.get(mem_type, '[MEMORY]')
+    topic = mem.get('topic', '')
+    text = mem.get('text', '')
+    choice = mem.get('choice', '')
+
+    # Build the rendered line
+    parts = [prefix]
+    if topic:
+        parts.append(f"[topic={topic}]")
+    if choice:
+        parts.append(f"[{choice}]")
+    parts.append(text[:500])  # Truncate very long texts
+
+    return ' '.join(parts)
+
+
+def split_memories_by_importance(
+    limit: int = 20,
+    recent: str = "24h"
+) -> Tuple[str, str]:
+    """
+    Split memories into contextual (background) and directive (high-priority).
+
+    Returns:
+        (context_memories, directive_memories)
+
+    - Context memories (L/M importance): Placed before the objective
+    - Directive memories (H/Critical importance): Placed AFTER the objective
+      to fight recency bias and enforce constraints
+
+    This implements the "post-prompt injection" pattern to give critical
+    memories equal weight with the user's prompt.
+    """
+    memories = fetch_memories_with_metadata(limit=limit, recent=recent)
+
+    context_lines = []
+    directive_lines = []
+
+    for mem in memories:
+        rendered = render_memory_with_active_voice(mem)
+        importance = (mem.get('importance') or 'M').upper()
+        mem_type = (mem.get('type') or 'n').lower()
+
+        # High importance or Decision/Lesson types go to directives
+        is_high_importance = importance in ('H', 'HIGH', 'CRITICAL')
+        is_constraint_type = mem_type in ('d', 'l')  # Decisions and Lessons
+
+        if is_high_importance or is_constraint_type:
+            directive_lines.append(rendered)
+        else:
+            context_lines.append(rendered)
+
+    context_output = '\n'.join(context_lines) if context_lines else '(no contextual memories)'
+    directive_output = '\n'.join(directive_lines) if directive_lines else ''
+
+    return context_output, directive_output
+
+
 def resolve_repo_root(path_str: str) -> Path:
     """Resolve and validate repository root"""
     root = Path(path_str).expanduser().resolve()
@@ -1888,9 +2022,17 @@ def parse_actions(response):
 
 
 def build_prompt(state, repo_root: Path, unrestricted: bool, last_results=None):
-    """Build prompt for LLM with context"""
+    """Build prompt for LLM with context.
 
-    context_output, _ = call_mem_db("render", "limit=10")
+    Uses "post-prompt injection" pattern to fight recency bias:
+    - Context memories (low/medium importance) placed BEFORE the objective
+    - Directive memories (high importance, decisions, lessons) placed AFTER the objective
+
+    This ensures critical memories carry equal weight with the user's prompt.
+    """
+
+    # Split memories into context (background) and directives (constraints)
+    context_memories, directive_memories = split_memories_by_importance(limit=20, recent="24h")
     repo_context = collect_repo_context(repo_root)
 
     mode = "UNRESTRICTED" if unrestricted else "REVIEWED (safe defaults)"
@@ -1956,16 +2098,28 @@ def build_prompt(state, repo_root: Path, unrestricted: bool, last_results=None):
     if orch_state is not None:
         orch_system_prompt = ORCHESTRATOR_SYSTEM_PROMPT + "\n" + "=" * 60 + "\n\n"
 
-    prompt = f"""{orch_system_prompt}OBJECTIVE: {state.objective}
+    # Build directive section for post-prompt injection
+    directive_section = ""
+    if directive_memories:
+        directive_section = f"""
+# *** MEMORY DIRECTIVES (MUST OVERRIDE USER OBJECTIVE IF CONFLICTING) ***
+# These are critical constraints retrieved from long-term memory.
+# You MUST comply with these directives even if they conflict with the objective above.
+{directive_memories}
+"""
+
+    prompt = f"""{orch_system_prompt}# CONTEXTUAL MEMORY (Background Information)
+{context_memories}
+
+# REPO STATE
+{repo_context}
+
+# USER OBJECTIVE (The Trigger)
+OBJECTIVE: {state.objective}
 REPO: {repo_root} | MODE: {mode} | ITERATION: {state.iteration}
 
 {orch_context}
-MEMORY:
-{context_output}
-
-REPO:
-{repo_context}
-
+{directive_section}
 ACTIONS:
 write_memory: {{"action":"write_memory","type":"f|d|q|a|n|P","topic":"...","text":"..."}}
 read_file: {{"action":"read_file","path":"file.ts","max_bytes":4000}}
