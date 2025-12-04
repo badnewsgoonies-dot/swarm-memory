@@ -46,6 +46,7 @@ SCRIPT_DIR = Path(__file__).parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from llm_client import LLMClient, LLMResponse
+from task_claims import TaskRecord, claim_next_open_todo
 
 # Configure logging
 logging.basicConfig(
@@ -123,66 +124,33 @@ def log_to_memory(msg_type: str, topic: str, text: str, source: str = "agent_loo
 
 def find_open_todo() -> Optional[TodoItem]:
     """
-    Find one OPEN TODO from the database.
-    Returns the highest-importance, oldest OPEN TODO.
+    Atomically claim one OPEN TODO and mark it IN_PROGRESS with ownership metadata.
     """
-    # Use Python to query directly for more control
-    import sqlite3
-
     db_path = os.environ.get("MEMORY_DB", str(SCRIPT_DIR / "memory.db"))
+    claim_owner = os.environ.get("TODO_OWNER", "agent_loop")
+    claim_role = os.environ.get("TODO_ROLE", "planner")
+    claim_chat = os.environ.get("CHAT_ID") or f"{claim_role}-{os.getpid()}"
+    ttl_minutes = int(os.environ.get("TODO_CLAIM_TTL_MINUTES", "45"))
 
-    try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
+    claimed: Optional[TaskRecord] = claim_next_open_todo(
+        Path(db_path),
+        owner=claim_owner,
+        role=claim_role,
+        chat_id=claim_chat,
+        ttl_minutes=ttl_minutes
+    )
 
-        # Query for OPEN TODOs, ordered by importance then timestamp
-        cursor.execute("""
-            SELECT id, anchor_topic, text, anchor_choice, importance, links
-            FROM chunks
-            WHERE anchor_type = 'T' AND anchor_choice = 'OPEN'
-            ORDER BY
-                CASE importance
-                    WHEN 'H' THEN 1
-                    WHEN 'M' THEN 2
-                    WHEN 'L' THEN 3
-                    ELSE 4
-                END,
-                timestamp ASC
-            LIMIT 1
-        """)
-
-        row = cursor.fetchone()
-        conn.close()
-
-        if not row:
-            return None
-
-        db_id, topic, text, status, importance, links = row
-
-        # Extract task_id from links JSON
-        task_id = None
-        if links:
-            try:
-                links_obj = json.loads(links)
-                task_id = links_obj.get("id")
-            except json.JSONDecodeError:
-                pass
-
-        if not task_id:
-            task_id = f"db-{db_id}"
-
-        return TodoItem(
-            task_id=task_id,
-            topic=topic or "general",
-            text=text or "",
-            status=status or "OPEN",
-            importance=importance or "M",
-            db_id=db_id
-        )
-
-    except Exception as e:
-        logger.error(f"Failed to query TODOs: {e}")
+    if not claimed:
         return None
+
+    return TodoItem(
+        task_id=claimed.task_id,
+        topic=claimed.topic or "general",
+        text=claimed.text or "",
+        status=claimed.status or "IN_PROGRESS",
+        importance=claimed.importance or "M",
+        db_id=claimed.db_id
+    )
 
 def get_task_context(task_id: str, limit: int = 20) -> str:
     """Get context bundle for a task via mem-task-context.sh"""
