@@ -6,9 +6,17 @@ Polls memory.db for new task-related glyphs and emits JSON notifications.
 Enables multiple agents/chats to stay in sync on task progress.
 
 How to run:
-    ./mem-notify-daemon.py              # Poll continuously, emit to stdout
-    ./mem-notify-daemon.py --once       # Single poll, then exit
-    ./mem-notify-daemon.py --reset      # Clear state and re-emit all
+    ./mem-notify-daemon.py                      # Poll continuously, emit to stdout
+    ./mem-notify-daemon.py --once               # Single poll, then exit
+    ./mem-notify-daemon.py --reset              # Clear state and re-emit all
+    ./mem-notify-daemon.py --mailbox events.jsonl   # Also append to file (for Chat B)
+
+Options:
+    --once              Run one poll cycle and exit
+    --reset             Clear state file and re-emit all notifications
+    --mailbox FILE      Append JSON notifications to FILE (JSONL format)
+                        File is created if it doesn't exist. Writes are flushed
+                        immediately so other processes can tail the file.
 
 Environment:
     MEMORY_DB    Path to memory.db (default: ./memory.db)
@@ -21,8 +29,16 @@ Output (one JSON object per line):
 
 To stop:
     Ctrl+C or: touch notify_daemon.kill
+
+Example - Chat B reads mailbox:
+    # Terminal 1: Start daemon with mailbox
+    ./mem-notify-daemon.py --mailbox /tmp/memory_events.jsonl
+
+    # Terminal 2: Chat B tails the mailbox
+    tail -f /tmp/memory_events.jsonl | jq .
 """
 
+import argparse
 import json
 import os
 import sqlite3
@@ -157,8 +173,8 @@ def get_task_context(task_id: str) -> str:
 # Notification emission
 # ---------------------------------------------------------------------------
 
-def emit_notification(chunk: dict, context: str):
-    """Print JSON notification to stdout."""
+def emit_notification(chunk: dict, context: str, mailbox_file=None):
+    """Print JSON notification to stdout, optionally also to mailbox file."""
     notification = {
         "event": "memory_update",
         "chunk_id": chunk["id"],
@@ -168,14 +184,22 @@ def emit_notification(chunk: dict, context: str):
         "text": chunk.get("text") or "",
         "context": context
     }
-    print(json.dumps(notification), flush=True)
+    json_line = json.dumps(notification)
+
+    # Always print to stdout
+    print(json_line, flush=True)
+
+    # Also write to mailbox file if provided
+    if mailbox_file is not None:
+        mailbox_file.write(json_line + "\n")
+        mailbox_file.flush()
 
 
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 
-def run_daemon(once: bool = False):
+def run_daemon(once: bool = False, mailbox_path: str = None):
     """Main polling loop."""
     if not DB_PATH.exists():
         log_warn(f"Database not found: {DB_PATH}")
@@ -184,6 +208,12 @@ def run_daemon(once: bool = False):
     state = load_state()
     last_id = state.get("last_id", 0)
     log_info(f"Starting, last_id={last_id}")
+
+    # Open mailbox file if specified (append mode, create if needed)
+    mailbox_file = None
+    if mailbox_path:
+        mailbox_file = open(mailbox_path, "a")
+        log_info(f"Writing to mailbox: {mailbox_path}")
 
     try:
         while True:
@@ -204,7 +234,7 @@ def run_daemon(once: bool = False):
                 context = get_task_context(task_id)
 
                 # Emit notification
-                emit_notification(chunk, context)
+                emit_notification(chunk, context, mailbox_file)
                 log_info(f"Emitted chunk={chunk_id} type={chunk['anchor_type']} task={task_id}")
 
                 # Update last_id
@@ -227,6 +257,8 @@ def run_daemon(once: bool = False):
     finally:
         state["last_id"] = last_id
         save_state(state)
+        if mailbox_file:
+            mailbox_file.close()
 
 
 # ---------------------------------------------------------------------------
@@ -234,14 +266,30 @@ def run_daemon(once: bool = False):
 # ---------------------------------------------------------------------------
 
 def main():
-    once = "--once" in sys.argv
-    reset = "--reset" in sys.argv
+    parser = argparse.ArgumentParser(
+        description="Memory sync notification daemon",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--once", action="store_true",
+        help="Run one poll cycle and exit"
+    )
+    parser.add_argument(
+        "--reset", action="store_true",
+        help="Clear state file and re-emit all notifications"
+    )
+    parser.add_argument(
+        "--mailbox", metavar="FILE",
+        help="Append JSON notifications to FILE (JSONL format)"
+    )
 
-    if reset and STATE_FILE.exists():
+    args = parser.parse_args()
+
+    if args.reset and STATE_FILE.exists():
         STATE_FILE.unlink()
         log_info("State reset")
 
-    run_daemon(once=once)
+    run_daemon(once=args.once, mailbox_path=args.mailbox)
 
 
 if __name__ == "__main__":
