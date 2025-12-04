@@ -704,7 +704,8 @@ Status: {'BLOCKED - ' + (self.blocked_reason or '') if self.is_blocked else 'act
 # ORCHESTRATOR SYSTEM PROMPT
 # =============================================================================
 
-ORCHESTRATOR_SYSTEM_PROMPT = """You are the ORCHESTRATOR for a codebase.
+ORCHESTRATOR_SYSTEM_PROMPT = """
+You are the ORCHESTRATOR for a codebase.
 
 You do NOT directly edit code; instead you design and coordinate daemon runs
 in three phases:
@@ -712,30 +713,178 @@ in three phases:
   IMPLEMENT -> AUDIT -> FIX -> AUDIT -> ... -> DONE or BLOCKED
 
 You will see:
-- The high-level objective with ORCHESTRATE: prefix
-- PHASE glyphs that describe previous rounds, e.g.:
-  [PHASE][task=vv2-orch-001][from=IMPLEMENT][to=AUDIT][round=1][error=ts:TS2304:Cannot find name 'foo']
+- A high-level objective with an ORCHESTRATE: prefix
+- PHASE glyphs that describe previous rounds, for example:
+  [PHASE][task=clockcrypts-demo-001][from=IMPLEMENT][to=AUDIT][round=1][error=build:missing-dependency]
 - ATTEMPT / RESULT / LESSON glyphs from prior daemons
+- Logs and error output from previous actions (builds, tests, etc.)
 
-Your responsibilities:
+CRITICAL CONTEXT FOR GAME BUILDING
+----------------------------------
+In this repository there is a game design manual:
 
-1. Decide which phase to run next (IMPLEMENT, AUDIT, or FIX) given the history.
-2. For IMPLEMENT/FIX:
-   - Propose a concrete sub-objective for the daemon (single narrow change).
-   - Suggest tools/commands it SHOULD run (e.g. edit files, run pnpm test/typecheck).
-3. For AUDIT:
-   - Specify how to verify the objective (tests, typecheck, lint, manual inspection).
-4. Update PHASE by emitting an "orch_transition" action when phases change.
+  docs/game_manual_demo.md
 
-Anti-loop rules (VERY IMPORTANT):
+This manual defines:
+- The intended game loop and player experience
+- The minimum scope for a shippable demo
+- A "Definition of Demo Complete" section that acts as the acceptance criteria
 
-- If the same error_signature appears twice in a row in AUDIT failures,
-  the task MUST be marked BLOCKED with reason "repeated_error_sig".
-- If max_rounds is reached, mark BLOCKED with reason "max_rounds".
-- Do NOT keep asking daemons to do the same thing that already failed.
+Your job is to treat that manual as the SINGLE SOURCE OF TRUTH for:
+- What features should exist
+- What counts as done
+- Which features are "nice to have" vs required for the demo
 
-Output a single JSON action. For phase transitions use orch_transition.
-For spawning work use spawn_daemon with wait=true.
+GENERAL RULES
+-------------
+1. You NEVER directly edit files. You only propose JSON actions like:
+   {"action":"read_file", ...}, {"action":"apply_patch", ...}, {"action":"exec", ...},
+   {"action":"spawn_daemon", ...}, {"action":"orch_transition", ...}.
+2. You must keep a clear distinction between phases:
+   - IMPLEMENT: Create or modify code/assets to move towards the goal.
+   - AUDIT: Run builds/tests and inspect results; no major new features.
+   - FIX: Minimal, targeted changes to resolve specific errors found in AUDIT.
+3. You must respect anti-loop rules:
+   - The system tracks error signatures (e.g., ts:TS2304:Cannot find name 'foo').
+   - If you see the same error signature more than once in a round, do NOT keep retrying the same fix.
+   - If you cannot make progress after the configured max rounds, you should transition to BLOCKED.
+
+PHASE-BY-PHASE BEHAVIOR
+-----------------------
+
+PHASE = IMPLEMENT
+-----------------
+Main goals:
+- Ensure the project structure exists (Godot 4 + C# or other engine/framework).
+- Implement the core features described in the manual that are required for the demo:
+  - Title screen -> Start Run -> Game flow
+  - Player controller and basic combat
+  - Enemy behaviors
+  - Rooms and progression
+  - Boss and Run Summary screen
+
+In IMPLEMENT phase, you should:
+
+1. ENSURE MANUAL IS LOADED
+   - If you haven't seen docs/game_manual_demo.md content in this orchestration round,
+     your FIRST action MUST be to read it:
+
+     {"action":"read_file","path":"docs/game_manual_demo.md"}
+
+   - Summarize and keep in mind especially:
+     - Core Game Loop
+     - Player section
+     - Enemy section
+     - Rooms & Layout
+     - Definition of Demo Complete
+
+2. CHECK PROJECT SKELETON
+   - If the project is missing or broken (no project.godot, etc.), orchestrate its creation.
+   - Use spawn_daemon or exec to run:
+     - Engine-specific commands if needed (for C# build / project).
+   - Ensure a clear folder structure exists for scenes and scripts.
+
+3. IMPLEMENT FEATURES IN SMALL, SAFE STEPS
+   - Prefer sequences like:
+     - read_file (existing code)
+     - edit_file (incremental change)
+     - exec ("build command")
+   - Use spawn_daemon with wait=true for multi-step editing work, but avoid spawning too many levels deep.
+
+4. KEEP MANUAL AS CHECKLIST
+   - When adding features, explicitly align them with sections of docs/game_manual_demo.md.
+   - Example: "Implement Player controller per section 3.2: HP, movement, shooting".
+
+5. PREPARE FOR AUDIT
+   - Once the major demo features appear to be implemented, ensure there is at least ONE clear way
+     to run the demo (e.g., by running the project or a test build).
+   - Then use an orch_transition to move to AUDIT:
+
+     {"action":"orch_transition","task_id":"<task_id>","transition":"implement_done","audit_log":"...what was implemented..."}
+
+PHASE = AUDIT
+-------------
+Main goals:
+- Verify the build runs without errors.
+- Check that the demo requirements are satisfied according to the manual's "Definition of Demo Complete".
+
+In AUDIT phase, you should:
+
+1. RUN BUILDS/TESTS
+   - Use actions like:
+     {"action":"exec","cmd":"<build or run command>","cwd":"<project_root>"}
+   - Capture build output and summarize failures.
+
+2. CHECK AGAINST MANUAL
+   - Cross-check the observed behavior/logs against the "Definition of Demo Complete".
+   - If possible, instrument or log enough to know:
+     - Can the game start from Title -> Start Run?
+     - Does the player spawn and move?
+     - Are rooms, enemies, boss, and summary reachable?
+
+3. DECIDE AUDIT RESULT
+   - If the demo clearly satisfies the manual's Demo Complete criteria:
+     - Use orch_transition with "audit_pass":
+
+       {"action":"orch_transition","task_id":"<task_id>","transition":"audit_pass","audit_log":"...why this meets Demo Complete..."}
+
+   - If there are missing features or errors:
+     - Use orch_transition with "audit_fail" and an audit_log that clearly lists:
+       - Build/runtime errors (with error signatures if possible).
+       - Missing features relative to the manual.
+
+PHASE = FIX
+-----------
+Main goals:
+- Address the specific shortcomings found in the last AUDIT.
+- Avoid guessing; fix concretely.
+
+In FIX phase, you should:
+
+1. REVIEW LAST AUDIT_LOG
+   - Identify the main problems:
+     - Build errors
+     - Crashes
+     - Missing core features from Demo Complete list
+
+2. PLAN MINIMAL FIXES
+   - Prefer targeted patches:
+     - Single file changes
+     - Small adjustments
+   - Do NOT redesign the entire architecture in FIX. That belongs in IMPLEMENT.
+
+3. APPLY FIXES VIA ACTIONS
+   - Use read_file / edit_file / exec / spawn_daemon as needed.
+   - After implementing likely fixes, transition back to AUDIT:
+
+     {"action":"orch_transition","task_id":"<task_id>","transition":"fix_done","audit_log":"...what was fixed and why..."}
+
+ANTI-LOOP & BLOCKING
+--------------------
+- Each AUDIT failure should be associated with an error signature (build errors, missing feature label, etc.).
+- If you see the same error signature repeatedly and cannot resolve it in the current round:
+  - Move towards BLOCKED state by using:
+    {"action":"orch_transition","task_id":"<task_id>","transition":"blocked","audit_log":"...why this is blocked, which Demo Complete criteria are unmet, and what human input is required..."}
+
+- When BLOCKED, ensure the audit_log clearly states:
+  - Which manual sections are still not satisfied.
+  - Exact errors and what additional information or permissions a human needs to provide.
+
+OUTPUT FORMAT
+-------------
+For EVERY step, you must output exactly ONE top-level JSON object describing the next action, e.g.:
+
+{"action":"read_file","path":"docs/game_manual_demo.md"}
+
+or:
+
+{"action":"exec","cmd":"pnpm build","cwd":"/path/to/project"}
+
+or:
+
+{"action":"orch_transition","task_id":"clockcrypts-demo-001","transition":"audit_pass","audit_log":"...details..."}
+
+Do NOT include commentary outside the JSON except where specifically allowed by the daemon.
 """
 
 # Configuration
@@ -782,6 +931,7 @@ class DaemonState:
         self.llm_provider = "claude"
         self.llm_model = None
         self.llm_tier = "auto"
+        self.rate_limit_backoff_count = 0  # Track consecutive rate limit hits for exponential backoff
 
     def save(self):
         """Save state to file"""
@@ -797,7 +947,8 @@ class DaemonState:
             "unrestricted": self.unrestricted,
             "llm_provider": self.llm_provider,
             "llm_model": self.llm_model,
-            "llm_tier": self.llm_tier
+            "llm_tier": self.llm_tier,
+            "rate_limit_backoff_count": self.rate_limit_backoff_count
         }
         self.state_file.write_text(json.dumps(data, indent=2))
 
@@ -821,6 +972,7 @@ class DaemonState:
             self.llm_provider = data.get("llm_provider", "claude")
             self.llm_model = data.get("llm_model")
             self.llm_tier = data.get("llm_tier", "auto")
+            self.rate_limit_backoff_count = data.get("rate_limit_backoff_count", 0)
             return True
         except Exception as e:
             logger.error(f"Failed to load state: {e}")
@@ -838,6 +990,8 @@ class DaemonState:
         """Record an iteration for rate limiting"""
         self.iteration_times.append(datetime.now())
         self.iteration += 1
+        # Reset backoff on successful iteration
+        self.rate_limit_backoff_count = 0
 
 
 def check_kill_switch():
@@ -851,7 +1005,7 @@ def clear_kill_switch():
         KILL_FILE.unlink()
 
 
-def call_llm(prompt, verbose=False, provider="claude", model=None, tier="auto"):
+def call_llm(prompt, verbose=False, log_full_response=False, provider="claude", model=None, tier="auto"):
     """Call LLM with prompt (Claude CLI, Codex, or Hybrid local/API)
 
     Providers:
@@ -860,6 +1014,9 @@ def call_llm(prompt, verbose=False, provider="claude", model=None, tier="auto"):
         - hybrid: Tiered Ollama + OpenAI (fast/code/smart/auto)
         - ollama: Direct Ollama call
         - openai: Direct OpenAI API call
+
+    Args:
+        log_full_response: If True, logs complete LLM response including reasoning text
     """
     if verbose:
         logger.info(f"LLM prompt ({len(prompt)} chars, provider={provider}, tier={tier}):\n{prompt[:500]}...")
@@ -883,7 +1040,9 @@ def call_llm(prompt, verbose=False, provider="claude", model=None, tier="auto"):
             response = client.complete(prompt, tier=use_tier)
 
             if response.success:
-                if verbose:
+                if log_full_response:
+                    logger.info(f"LLM FULL response ({response.tier}, {response.latency_ms}ms):\n{response.text}")
+                elif verbose:
                     logger.info(f"LLM response ({response.tier}, {response.latency_ms}ms):\n{response.text[:500]}...")
                 return response.text
             else:
@@ -917,7 +1076,9 @@ def call_llm(prompt, verbose=False, provider="claude", model=None, tier="auto"):
         )
         # Claude CLI may output to stderr in non-TTY mode
         response = (result.stdout + result.stderr).strip()
-        if verbose:
+        if log_full_response:
+            logger.info(f"LLM FULL response ({len(response)} chars):\n{response}")
+        elif verbose:
             logger.info(f"LLM response ({len(response)} chars):\n{response[:500]}...")
         else:
             logger.debug(f"LLM response: {response[:200]}...")
@@ -1024,7 +1185,7 @@ def collect_repo_context(repo_root: Path) -> str:
     return "\n".join(parts)
 
 
-def execute_action(action_data, repo_root: Path, unrestricted: bool):
+def execute_action(action_data, repo_root: Path, unrestricted: bool, state=None):
     """Execute a single action from JSON with repo awareness"""
     action = action_data.get("action", "unknown")
     logger.info(f"Executing action: {action}")
@@ -1101,8 +1262,15 @@ def execute_action(action_data, repo_root: Path, unrestricted: bool):
             "--repo-root", sub_repo,
             "--unrestricted",
             "--max-iterations", str(max_iter),
-            "--state-file", str(sub_state_file)
+            "--state-file", str(sub_state_file),
         ]
+        # Inherit LLM provider from parent state if available
+        if state is not None:
+            cmd.extend(["--llm", state.llm_provider])
+            if state.llm_model:
+                cmd.extend(["--llm-model", state.llm_model])
+            if state.llm_tier and state.llm_tier != "auto":
+                cmd.extend(["--tier", state.llm_tier])
         # Run in background
         env = os.environ.copy()
         env["HOME"] = str(Path.home() / "swarm/memory/.claude-tmp")
@@ -1456,8 +1624,42 @@ def execute_action(action_data, repo_root: Path, unrestricted: bool):
         logger.info(f"Objective done: {summary}")
         return {"success": True, "done": True, "summary": summary}
 
+    # EDGE CASE: Unknown action auto-recovery - map common unknown actions
+    # Map mkdir -> exec, touch -> exec, etc.
+    UNKNOWN_ACTION_MAPPINGS = {
+        "mkdir": lambda data: {
+            "action": "exec",
+            "cmd": f"mkdir -p {shlex.quote(data.get('path', data.get('dir', '')))}",
+            "cwd": data.get("cwd", str(repo_root))
+        },
+        "touch": lambda data: {
+            "action": "exec",
+            "cmd": f"touch {shlex.quote(data.get('path', ''))}",
+            "cwd": data.get("cwd", str(repo_root))
+        },
+        "rm": lambda data: {
+            "action": "exec",
+            "cmd": f"rm -f {shlex.quote(data.get('path', ''))}",
+            "cwd": data.get("cwd", str(repo_root))
+        },
+        "mv": lambda data: {
+            "action": "exec",
+            "cmd": f"mv {shlex.quote(data.get('src', ''))} {shlex.quote(data.get('dst', ''))}",
+            "cwd": data.get("cwd", str(repo_root))
+        },
+    }
+
+    if action in UNKNOWN_ACTION_MAPPINGS:
+        logger.info(f"Auto-mapping unknown action '{action}' to exec")
+        try:
+            mapped_action = UNKNOWN_ACTION_MAPPINGS[action](action_data)
+            return execute_action(mapped_action, repo_root, unrestricted, state=state)
+        except Exception as e:
+            logger.error(f"Failed to map action '{action}': {e}")
+            return {"success": False, "error": f"Failed to map action '{action}': {e}"}
+
     logger.warning(f"Unknown action: {action}")
-    return {"success": False, "error": f"Unknown action: {action}"}
+    return {"success": False, "error": f"Unknown action: {action}", "unknown_action": True}
 
 
 def parse_actions(response):
@@ -1616,6 +1818,26 @@ done: {{"action":"done","summary":"What was accomplished"}}
     if last_results:
         prompt += f"LAST ACTION RESULTS:\n{json.dumps(last_results, indent=2)}\n\n"
 
+        # EDGE CASE: Unknown action auto-recovery - inject hint about valid actions
+        if last_results.get("unknown_action"):
+            prompt += """
+**IMPORTANT: Unknown action error!**
+The action you tried is not recognized. Here are the VALID actions you can use:
+
+- write_memory, mem_search, consolidate
+- read_file, edit_file, list_files, search_text
+- exec (for shell commands like mkdir, rm, mv, etc.)
+- spawn_daemon, orch_status, orch_transition
+- git_status, git_log, git_diff, check_deps
+- run, http_request, sleep, done
+
+**For filesystem operations like mkdir, use exec:**
+Example: {"action":"exec","cmd":"mkdir -p path/to/dir"}
+
+Choose a VALID action from the list above.
+
+"""
+
     if state.history:
         recent_history = state.history[-5:]
         prompt += "RECENT ACTIONS:\n"
@@ -1623,11 +1845,43 @@ done: {{"action":"done","summary":"What was accomplished"}}
             prompt += f"- {h.get('action', '?')}: {h.get('result', {}).get('output', '')[:100]}...\n"
         prompt += "\n"
 
-    # Detect action loops
+    # Detect action loops (action+path signature)
+    loop_detected = False
+    loop_action = None
     if len(state.history) >= 3:
+        # Build action signatures including path/query for better detection
+        def action_sig(h):
+            a = h.get('action', '?')
+            p = h.get('path', h.get('query', h.get('cmd', '')))
+            if p:
+                return f"{a}:{p[:50]}"
+            return a
+
+        last_5_sigs = [action_sig(h) for h in state.history[-5:]]
         last_3 = [h.get('action') for h in state.history[-3:]]
+
+        # Check for exact signature repeats (action + same path)
+        if len(last_5_sigs) >= 3:
+            sig_counts = {}
+            for sig in last_5_sigs:
+                sig_counts[sig] = sig_counts.get(sig, 0) + 1
+            max_repeat = max(sig_counts.values()) if sig_counts else 0
+            if max_repeat >= 3:
+                loop_detected = True
+                loop_action = max(sig_counts, key=sig_counts.get)
+
+        # Also check action-only repeats
         if len(set(last_3)) == 1:
-            prompt += f"\n**WARNING: You repeated '{last_3[0]}' 3 times. CHANGE ACTION. If listing files, READ one. If reading, EDIT or WRITE.**\n\n"
+            loop_detected = True
+            loop_action = last_3[0]
+
+        if loop_detected:
+            prompt += f"\n**LOOP DETECTED: You repeated '{loop_action}' multiple times.**\n"
+            prompt += "**MANDATORY: You MUST use a DIFFERENT action now. Options:**\n"
+            prompt += "- If stuck on list_files: use edit_file to CREATE the file directly\n"
+            prompt += "- If stuck on read_file: use edit_file to WRITE changes\n"
+            prompt += "- If stuck on exec: use edit_file instead\n"
+            prompt += "- If truly stuck: use {\"action\":\"done\", \"summary\":\"Blocked: <reason>\"}\n\n"
 
     prompt += """RULES:
 - Output ONLY ONE JSON action. No explanation, no markdown, just JSON.
@@ -1642,7 +1896,7 @@ done: {{"action":"done","summary":"What was accomplished"}}
     return prompt
 
 
-def run_daemon(state, repo_root: Path, unrestricted: bool, verbose=False, use_governor=True):
+def run_daemon(state, repo_root: Path, unrestricted: bool, verbose=False, log_full_response=False, use_governor=True):
     """Main daemon loop"""
     logger.info(f"Starting daemon with objective: {state.objective}")
     logger.info(f"Repo root: {repo_root} | Mode: {'UNRESTRICTED' if unrestricted else 'REVIEWED'}")
@@ -1666,10 +1920,16 @@ def run_daemon(state, repo_root: Path, unrestricted: bool, verbose=False, use_go
             clear_kill_switch()
             return
 
-        # Check rate limit
+        # Check rate limit with exponential backoff
         if not state.check_rate_limit():
-            wait_time = 60
-            logger.warning(f"Rate limit reached, waiting {wait_time}s")
+            # Exponential backoff: 60s, 120s, 240s, max 300s
+            state.rate_limit_backoff_count += 1
+            wait_time = min(60 * (2 ** (state.rate_limit_backoff_count - 1)), 300)
+            logger.warning(
+                f"Rate limit reached (attempt {state.rate_limit_backoff_count}), "
+                f"waiting {wait_time}s (exponential backoff)"
+            )
+            state.save()
             time.sleep(wait_time)
             continue
 
@@ -1677,7 +1937,14 @@ def run_daemon(state, repo_root: Path, unrestricted: bool, verbose=False, use_go
         prompt = build_prompt(state, repo_root, unrestricted, last_results)
         logger.info(f"Iteration {state.iteration}: calling LLM")
 
-        response = call_llm(prompt, verbose=verbose, provider=state.llm_provider, model=state.llm_model, tier=state.llm_tier)
+        response = call_llm(
+            prompt,
+            verbose=verbose,
+            log_full_response=log_full_response,
+            provider=state.llm_provider,
+            model=state.llm_model,
+            tier=state.llm_tier
+        )
         if not response:
             logger.error("No response from LLM")
             state.status = "error"
@@ -1696,6 +1963,21 @@ def run_daemon(state, repo_root: Path, unrestricted: bool, verbose=False, use_go
                 "result": {"success": False}
             })
             state.save()
+
+            # EDGE CASE: Check for consecutive parse errors (OAuth expired, bad model, etc.)
+            if len(state.history) >= 3:
+                last_3_actions = [h.get('action') for h in state.history[-3:]]
+                if all(a == 'parse_error' for a in last_3_actions):
+                    logger.error("3 consecutive parse errors. Likely auth/model issue. Terminating.")
+                    state.status = "error"
+                    state.history.append({
+                        "action": "auto_error",
+                        "reason": "Consecutive parse errors - check API auth/model",
+                        "result": {"success": False}
+                    })
+                    state.save()
+                    return
+
             continue
 
         # Execute first action (with governor pre-check)
@@ -1742,18 +2024,45 @@ def run_daemon(state, repo_root: Path, unrestricted: bool, verbose=False, use_go
             # ALLOW - proceed with execution
             logger.info(f"Governor approved, executing action")
 
-        result = execute_action(action_data, repo_root, unrestricted)
+        result = execute_action(action_data, repo_root, unrestricted, state=state)
         last_results = result
 
-        # Record in history
+        # Record in history (including path for loop detection)
         state.record_iteration()
-        state.history.append({
+        history_entry = {
             "action": action_data.get("action"),
+            "path": action_data.get("path", action_data.get("query", action_data.get("cmd", ""))),
             "data": action_data,
             "result": result
-        })
+        }
+        state.history.append(history_entry)
         state.last_action = action_data.get("action")
         state.save()
+
+        # EDGE CASE: Hard loop breaker - if same action+path 5+ times, force terminate
+        if len(state.history) >= 5:
+            def action_sig(h):
+                a = h.get('action', '?')
+                p = h.get('path', '')
+                return f"{a}:{p[:50]}" if p else a
+
+            last_5 = [action_sig(h) for h in state.history[-5:]]
+            sig_counts = {}
+            for sig in last_5:
+                sig_counts[sig] = sig_counts.get(sig, 0) + 1
+            max_repeat = max(sig_counts.values()) if sig_counts else 0
+
+            if max_repeat >= 5:
+                loop_sig = max(sig_counts, key=sig_counts.get)
+                logger.error(f"HARD LOOP DETECTED: '{loop_sig}' repeated 5 times. Force terminating.")
+                state.status = "blocked"
+                state.history.append({
+                    "action": "auto_blocked",
+                    "reason": f"Loop detected: {loop_sig}",
+                    "result": {"success": False, "error": "Forced termination due to action loop"}
+                })
+                state.save()
+                return
 
         # Check if done
         if result.get("done"):
@@ -1783,6 +2092,7 @@ def main():
     parser.add_argument('--clear-kill', action='store_true', help='Clear kill switch')
     parser.add_argument('--status', action='store_true', help='Show daemon status')
     parser.add_argument('--verbose', '-v', action='store_true', help='Log full prompts/responses at INFO level')
+    parser.add_argument('--log-full-response', action='store_true', help='Log complete LLM responses including reasoning text before JSON')
     parser.add_argument('--no-governor', action='store_true', help='Disable governor pre-flight checks')
     parser.add_argument('--repo-root', default=str(DEFAULT_REPO_ROOT), help='Repository root for actions')
     parser.add_argument('--unrestricted', action='store_true', help='Allow full action set (exec/edit/http); logs all actions')
@@ -1857,7 +2167,14 @@ def main():
         sys.exit(1)
 
     try:
-        run_daemon(state, repo_root, state.unrestricted, verbose=args.verbose, use_governor=not args.no_governor)
+        run_daemon(
+            state,
+            repo_root,
+            state.unrestricted,
+            verbose=args.verbose,
+            log_full_response=args.log_full_response,
+            use_governor=not args.no_governor
+        )
     except KeyboardInterrupt:
         logger.info("Daemon interrupted by user")
         state.status = "interrupted"

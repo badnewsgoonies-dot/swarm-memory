@@ -233,6 +233,15 @@ MODELS = {
         "max_tokens": 4000,
         "timeout": 120,
     },
+
+    # Naive prompt-only LM - no pretraining, uses prompt statistics only
+    "naive": {
+        "provider": "naive",
+        "model": "naive-prompt-lm",
+        "description": "Naive character model trained only on the prompt",
+        "max_tokens": 500,
+        "timeout": 10,
+    },
 }
 
 # All available models by provider
@@ -546,6 +555,33 @@ class LLMClient:
                 success=False, error=str(e),
             )
 
+    def _call_naive(self, prompt: str, model: str = "naive-prompt-lm", max_tokens: int = 500, timeout: int = 10) -> LLMResponse:
+        """Call the naive prompt-only LM.
+
+        This model has no external knowledge: for each call it builds a
+        small character-level Markov model using only the current prompt
+        and samples a short continuation.
+        """
+        from naive_llm import generate_from_prompt
+
+        start = time.time()
+        # Approximate "tokens" as characters / 4 for stats purposes only.
+        max_chars = max_tokens * 4
+        text = generate_from_prompt(prompt, max_chars=max_chars, order=3)
+        latency = int((time.time() - start) * 1000)
+
+        # Naive model does not report token usage; we treat everything as zero.
+        return LLMResponse(
+            text=text,
+            model=model,
+            provider="naive",
+            tier="",
+            tokens_in=0,
+            tokens_out=len(text),
+            latency_ms=latency,
+            success=True,
+        )
+
     def _call_copilot(self, prompt: str, model: str = "gpt-5.1", max_tokens: int = 4000, timeout: int = 120) -> LLMResponse:
         """Call Copilot CLI (copilot -p)
 
@@ -653,6 +689,8 @@ class LLMClient:
             response = self._call_codex(full_prompt, config["model"], effort, max_tokens, timeout)
         elif config["provider"] == "copilot":
             response = self._call_copilot(full_prompt, config["model"], max_tokens, timeout)
+        elif config["provider"] == "naive":
+            response = self._call_naive(full_prompt, config["model"], max_tokens, timeout)
         else:
             response = LLMResponse(
                 text="", model=config["model"], provider=config["provider"], tier=tier,

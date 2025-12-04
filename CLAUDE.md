@@ -401,3 +401,93 @@ When porting React to Preact:
 - Use `strict: true` in tsconfig.json (affects Zod type inference)
 - Keep zustand at v4.5.x (v5 removes GetState/SetState)
 - Add `vite-env.d.ts` for ImportMeta.env types
+
+## Game Building Workflow (Clockwork Crypts Demo)
+
+The orchestrator supports game building with a structured evaluation pipeline:
+
+```
+Manual → Orchestrator → Build → Eval → Human Playtest → Manager → New TODOs
+```
+
+### Game Design Manual
+
+The game manual (`docs/game_manual_demo.md`) is the single source of truth:
+- Core game loop and player experience
+- Minimum scope for shippable demo
+- "Definition of Demo Complete" acceptance criteria
+
+### Real-Time Monitoring
+
+Watch agents work in real-time:
+```bash
+./watch-agents.sh all           # tmux 4-pane dashboard
+./watch-agents.sh phases        # Watch PHASE transitions
+./watch-agents.sh task <id>     # Watch specific task history
+./watch-agents.sh daemon [log]  # Tail daemon log
+```
+
+### Orchestration
+
+Start the game-building orchestrator:
+```bash
+# Add TODO
+./mem-todo.sh add \
+  --id clockcrypts-demo-001 \
+  --topic clockcrypts-demo \
+  --text "ORCHESTRATE: Build Clockwork Crypts demo per docs/game_manual_demo.md" \
+  --importance H
+
+# Run daemon
+python3 swarm_daemon.py \
+  --objective "ORCHESTRATE: [task_id:clockcrypts-demo-001] [topic:clockcrypts-demo] Build the Clockwork Crypts Godot 4 project based on docs/game_manual_demo.md." \
+  --repo-root /path/to/clockcrypts-godot \
+  --unrestricted \
+  --max-iterations 80 \
+  --verbose 2>&1 | tee /tmp/clockcrypts-demo.log
+```
+
+### Structural Evaluation
+
+After orchestration, run the eval script:
+```bash
+./eval-clockcrypts-demo.sh clockcrypts-demo-001 /path/to/clockcrypts-godot
+
+# Checks:
+# - Game manual exists
+# - project.godot exists
+# - Entry scene exists
+# - Player/Enemy scripts exist
+# - Godot headless build passes
+# Logs RESULT + LESSON to memory
+```
+
+### Human Playtest
+
+Interactive checklist for gameplay feel:
+```bash
+./human-playtest.sh clockcrypts-demo-001
+
+# Checklist:
+# 1. Core Flow (title, rooms, boss, summary)
+# 2. Player (movement, attack, health)
+# 3. Enemies (spawn, variety, behaviors)
+# 4. Rooms (layouts, progression)
+# 5. Boss (encounter, phases)
+# 6. Stability (no crashes, no soft-locks)
+# Logs RESULT + LESSON to memory
+```
+
+### View All Evaluations
+
+```bash
+./mem-log.sh history clockcrypts-demo-001   # Full task history
+./mem-db.sh query t=R task_id=clockcrypts-demo-001   # All RESULT glyphs
+./mem-db.sh query t=L task_id=clockcrypts-demo-001   # All LESSON glyphs
+```
+
+### Evaluation Sources
+
+- `demo-eval`: Structural + build checks (automated)
+- `human-playtest`: Gameplay feel checks (interactive)
+- `orchestrator`: Phase transitions (automated)
