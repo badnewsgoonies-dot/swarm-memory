@@ -390,18 +390,26 @@ def priority_score(
     # Topic Locking: boost for active task
     task_boost = 0.0
     if active_task_id:
-        # Check if entry is linked to the active task (exact match in raw links)
+        # Check if entry is linked to the active task
+        # Use word boundary matching to avoid false positives (e.g., 'task1' matching 'task123')
         raw_links = entry.links or ""
-        if active_task_id in raw_links:
+        # Check for exact match with word boundaries in raw links
+        import re
+        link_pattern = r'(?:^|[,\s\[\]"\'{}])' + re.escape(active_task_id) + r'(?:$|[,\s\[\]"\'{}])'
+        if re.search(link_pattern, raw_links):
             task_boost = weights.active_task_boost
-        # Also check parsed links (handles JSON/CSV formats)
-        elif not task_boost:
+        
+        # Also check parsed links for exact match
+        if not task_boost:
             entry_links = parse_links(entry.links)
             if active_task_id in entry_links:
                 task_boost = weights.active_task_boost
-        # Also check topic match
-        if not task_boost and entry.topic and active_task_id.lower() in entry.topic.lower():
-            task_boost = weights.active_task_boost * 0.5  # Partial boost for topic match
+        
+        # Check topic for exact match (case-insensitive)
+        if not task_boost and entry.topic:
+            # Exact topic match only, no substring matching
+            if entry.topic.lower() == active_task_id.lower():
+                task_boost = weights.active_task_boost * 0.5  # Partial boost for exact topic match
 
     # Calculate final score with type weight
     base_score = (

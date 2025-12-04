@@ -1732,8 +1732,6 @@ def generate_project_hud() -> str:
     
     This is the "Source of Truth" for the agent's current context.
     """
-    from datetime import datetime
-    
     # Get current date/time
     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     current_date = datetime.now().strftime('%A, %B %d, %Y')
@@ -1763,8 +1761,7 @@ def generate_project_hud() -> str:
             if not line.strip():
                 continue
             try:
-                import json as json_mod
-                data = json_mod.loads(line)
+                data = json.loads(line)
                 topic = data[1] if len(data) > 1 and data[1] else "general"
                 text = (data[2] if len(data) > 2 and data[2] else "?")[:55]
                 hud_lines.append(f"║  {task_num}. [{topic[:12]:<12}] {text:<55} ║")
@@ -1789,8 +1786,7 @@ def generate_project_hud() -> str:
             if not line.strip():
                 continue
             try:
-                import json as json_mod
-                data = json_mod.loads(line)
+                data = json.loads(line)
                 topic = data[1] if len(data) > 1 and data[1] else "policy"
                 text = (data[2] if len(data) > 2 and data[2] else "?")[:55]
                 choice = data[3] if len(data) > 3 and data[3] else ""
@@ -1835,8 +1831,7 @@ def get_mandate_memories() -> str:
         if not line.strip():
             continue
         try:
-            import json as json_mod
-            data = json_mod.loads(line)
+            data = json.loads(line)
             topic = data[1] if len(data) > 1 and data[1] else "policy"
             text = data[2] if len(data) > 2 and data[2] else "?"
             choice = data[3] if len(data) > 3 and data[3] else ""
