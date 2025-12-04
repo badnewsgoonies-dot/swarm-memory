@@ -34,6 +34,10 @@ class WeightConfig:
     topic_bonus: float = 0.15
     project_bonus: float = 0.1
     link_bonus: float = 0.08
+    # Holy Triangle: Ideas decay rapidly (tau_days / idea_tau_divisor)
+    idea_tau_divisor: float = 5.0  # Ideas decay 5x faster than normal
+    # Holy Triangle: Task linking boost when memory matches current active task
+    active_task_boost: float = 0.3
     risk_keywords: Tuple[str, ...] = field(
         default_factory=lambda: (
             "blocker",
@@ -68,6 +72,7 @@ class Entry:
     project_id: Optional[str]
     scope: Optional[str]
     chat_id: Optional[str]
+    task_id: Optional[str] = None
     embedding_model: Optional[str] = None
     embedding_dim: Optional[int] = None
     embedding: Optional[bytes] = None
@@ -138,23 +143,26 @@ def lexical_similarity(a: str, b: str) -> float:
     return inter / union if union else 0.0
 
 
-def importance_score(label: Optional[str]) -> tuple[float, float]:
+def importance_score(label: Optional[str]) -> tuple[float, float, bool]:
     """
-    Map importance label to score and recency tau multiplier.
+    Map importance label to score, recency tau multiplier, and immortal flag.
+
+    Holy Triangle: High/Critical/H importance makes memories "immortal" (no decay).
 
     Returns:
-        (importance_value, tau_multiplier)
+        (importance_value, tau_multiplier, is_immortal)
     """
     if not label:
-        return 0.3, 1.0
+        return 0.3, 1.0, False
     label = label.lower()
+    # Holy Triangle: Immortal memories - High, Critical, or H
     if label in ("h", "high", "critical"):
-        return 1.0, 1.6
+        return 1.0, 1.6, True  # Immortal: force time decay to 1.0
     if label in ("m", "med", "medium"):
-        return 0.5, 1.25
+        return 0.5, 1.25, False
     if label in ("l", "low"):
-        return 0.1, 1.0
-    return 0.3, 1.0
+        return 0.1, 1.0, False
+    return 0.3, 1.0, False
 
 
 def parse_links(raw: Optional[str]) -> set[str]:
@@ -286,31 +294,75 @@ def priority_score(
     todos: Sequence[Entry],
     weights: WeightConfig,
     now: Optional[datetime] = None,
+    active_task_id: Optional[str] = None,
 ) -> dict:
     """
     Compute priority score and component breakdown for a memory entry.
 
+    Holy Triangle Priority Logic:
+    1. Fast Decay for Ideas (anchor_type="I"): High initial relevance but decay ~24h
+    2. Immortal Memories: High/Critical/H importance forces time decay to 1.0
+    3. Task Linking: Boost score if memory's task_id/links matches active_task_id
+
+    Args:
+        entry: Memory entry to score
+        todos: List of open TODO entries for alignment scoring
+        weights: Weight configuration
+        now: Current time (defaults to now)
+        active_task_id: Currently active task ID for task linking boost
+
     Returns:
         {
             "score": float,
-            "components": {"recency": R, "importance": I, "todo": T, "urgency": E},
+            "components": {"recency": R, "importance": I, "todo": T, "urgency": E, "task_link": L},
             "matched_todo": todo_entry or None,
-            "age_days": float
+            "age_days": float,
+            "is_immortal": bool,
+            "is_idea": bool
         }
     """
     now = now or datetime.now(timezone.utc)
     ts = parse_timestamp(entry.timestamp)
     age_days = (now - ts).total_seconds() / 86_400.0
-    imp_value, tau_multiplier = importance_score(entry.importance)
-    recency = temporal_decay_score(ts, now=now, tau_days=weights.tau_days * tau_multiplier)
+
+    # Holy Triangle #1: Fast Decay for Ideas
+    is_idea = entry.anchor_type == "I"
+    if is_idea:
+        # Ideas use faster decay (tau_days / idea_tau_divisor = ~1 day by default)
+        effective_tau = weights.tau_days / weights.idea_tau_divisor
+    else:
+        effective_tau = weights.tau_days
+
+    # Holy Triangle #2: Immortal Memories
+    imp_value, tau_multiplier, is_immortal = importance_score(entry.importance)
+    if is_immortal:
+        # Force time decay to 1.0 for immortal memories
+        recency = 1.0
+    else:
+        recency = temporal_decay_score(ts, now=now, tau_days=effective_tau * tau_multiplier)
+
     todo_alignment, matched = best_todo_alignment(entry, todos, weights)
     urgency = urgency_score(entry, matched, now, weights)
+
+    # Holy Triangle #3: Task Linking Boost
+    task_link_boost = 0.0
+    if active_task_id:
+        # Check direct task_id match
+        if entry.task_id and entry.task_id == active_task_id:
+            task_link_boost = weights.active_task_boost
+
+        # Check links field for task_id reference
+        if task_link_boost == 0.0 and entry.links:
+            entry_links = parse_links(entry.links)
+            if active_task_id.lower() in {link.lower() for link in entry_links}:
+                task_link_boost = weights.active_task_boost * 0.8  # Slightly less for indirect match
 
     score = (
         weights.w_recency * recency
         + weights.w_importance * imp_value
         + weights.w_todo_link * todo_alignment
         + weights.w_urgency * urgency
+        + task_link_boost
     )
 
     return {
@@ -320,8 +372,11 @@ def priority_score(
             "importance": float(imp_value),
             "todo": float(todo_alignment),
             "urgency": float(urgency),
+            "task_link": float(task_link_boost),
         },
         "matched_todo": matched,
         "age_days": age_days,
+        "is_immortal": is_immortal,
+        "is_idea": is_idea,
     }
 

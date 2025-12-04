@@ -103,6 +103,7 @@ curl -X POST http://10.0.0.X:8765/llm \
 | Result | `R` | Outcomes of attempts |
 | Lesson | `L` | Learnings from attempts |
 | Phase | `P` | Orchestrator phase transitions |
+| Idea | `I` | Stream of consciousness / working memory (auto-captured, fast decay) |
 
 **PHASE glyph details:**
 - `anchor_choice` = transition label (e.g., `IMPLEMENT->AUDIT`, `AUDIT->FIX`)

@@ -1722,13 +1722,33 @@ def parse_actions(response):
 
 
 def build_prompt(state, repo_root: Path, unrestricted: bool, last_results=None):
-    """Build prompt for LLM with context"""
+    """Build prompt for LLM with context, including HUD injection"""
 
     context_output, _ = call_mem_db("render", "limit=10")
     repo_context = collect_repo_context(repo_root)
 
     mode = "UNRESTRICTED" if unrestricted else "REVIEWED (safe defaults)"
     llm = state.llm_provider.upper()
+
+    # =============================================================================
+    # HUD INJECTION - Heads-Up Display for unified Time, Tasks, Memory
+    # =============================================================================
+    hud_output = ""
+    try:
+        hud_script = SCRIPT_DIR / "hooks" / "print-hud.sh"
+        if hud_script.exists():
+            result = subprocess.run(
+                [str(hud_script)],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                hud_output = result.stdout.strip()
+                logger.debug(f"HUD injected: {len(hud_output)} chars")
+    except Exception as e:
+        logger.warning(f"Failed to generate HUD: {e}")
+        # Continue without HUD if it fails
 
     # Check for orchestration mode
     orch_context = ""
@@ -1790,7 +1810,20 @@ def build_prompt(state, repo_root: Path, unrestricted: bool, last_results=None):
     if orch_state is not None:
         orch_system_prompt = ORCHESTRATOR_SYSTEM_PROMPT + "\n" + "=" * 60 + "\n\n"
 
-    prompt = f"""{orch_system_prompt}OBJECTIVE: {state.objective}
+    # Build the prompt with HUD at the very top
+    # HUD provides unified view of Time, Tasks, and Memory (Source of Truth)
+    hud_section = ""
+    if hud_output:
+        hud_section = f"""{hud_output}
+
+================================================================================
+SYSTEM INSTRUCTION: The OFFICIAL PROJECT HUD above is your Source of Truth.
+You must prioritize these Tasks and Constraints above all else.
+================================================================================
+
+"""
+
+    prompt = f"""{hud_section}{orch_system_prompt}OBJECTIVE: {state.objective}
 REPO: {repo_root} | MODE: {mode} | ITERATION: {state.iteration}
 
 {orch_context}
@@ -1801,7 +1834,7 @@ REPO:
 {repo_context}
 
 ACTIONS:
-write_memory: {{"action":"write_memory","type":"f|d|q|a|n|P","topic":"...","text":"..."}}
+write_memory: {{"action":"write_memory","type":"f|d|q|a|n|P|I","topic":"...","text":"..."}}
 read_file: {{"action":"read_file","path":"file.ts","max_bytes":4000}}
 edit_file: {{"action":"edit_file","path":"file.ts","content":"...","reason":"why"}}
 list_files: {{"action":"list_files","path":"src"}}

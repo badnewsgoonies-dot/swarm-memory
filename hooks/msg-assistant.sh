@@ -49,14 +49,10 @@ fi
 [[ -z "$RESPONSE" ]] && { log "SKIP: Could not extract response text"; exit 0; }
 
 # === FILTERING ===
+# Stream of Consciousness mode: Record ALL assistant outputs as Ideas (type="I")
+# No minimum length or word count filters - rapid-fire working memory stream
 
-# Check length (minimum 100 chars for assistant responses)
 RESPONSE_LEN=${#RESPONSE}
-[[ $RESPONSE_LEN -lt 100 ]] && { log "SKIP: Too short ($RESPONSE_LEN chars)"; exit 0; }
-
-# Word count check (minimum 15 words)
-WORD_COUNT=$(echo "$RESPONSE" | wc -w)
-[[ $WORD_COUNT -lt 15 ]] && { log "SKIP: Too few words ($WORD_COUNT)"; exit 0; }
 
 # === CONTENT PROCESSING ===
 
@@ -86,8 +82,8 @@ EXCERPT_ESCAPED=$(printf '%s' "$EXCERPT" | sed "s/'/'\\\\''/g")
 SESSION_SHORT="${SESSION_ID:0:8}"
 (
     "$MEM_DB" write \
-        t=c \
-        topic="conversation" \
+        t=I \
+        topic="working-memory" \
         text="$EXCERPT_ESCAPED" \
         choice="assistant" \
         session="$SESSION_SHORT" \
@@ -97,5 +93,5 @@ SESSION_SHORT="${SESSION_ID:0:8}"
         2>&1 | head -1 >> "$LOG_FILE"
 ) &
 
-log "RECORDED: Assistant message (${#EXCERPT} chars, session=$SESSION_SHORT)"
+log "RECORDED: Idea/Working Memory (${#EXCERPT} chars, session=$SESSION_SHORT)"
 exit 0
