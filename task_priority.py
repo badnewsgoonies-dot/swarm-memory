@@ -358,7 +358,7 @@ def priority_score(
     # Task Linking: if memory is linked to active task, boost score
     if active_task_id:
         # Check if entry's task_id matches active task
-        entry_task_id = getattr(entry, 'task_id', None) if hasattr(entry, 'task_id') else None
+        entry_task_id = entry.task_id
         if entry_task_id and entry_task_id == active_task_id:
             task_link_multiplier = weights.active_task_multiplier
         # Also check if topic matches

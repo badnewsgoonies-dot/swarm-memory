@@ -50,11 +50,13 @@ get_mandates() {
 # Format: [type, topic, text, choice, rationale, timestamp, session, source, scope, chat_id, agent_role, visibility, project_id, importance, due, links, task_id, metric]
 parse_task_json() {
     local line="$1"
-    python3 -c "
+    # Pass JSON via stdin to avoid shell injection
+    echo "$line" | python3 -c "
 import json
 import sys
 try:
-    data = json.loads('''$line''')
+    line = sys.stdin.read().strip()
+    data = json.loads(line)
     # Array format from query --json
     if isinstance(data, list) and len(data) >= 4:
         topic = data[1] or 'general'

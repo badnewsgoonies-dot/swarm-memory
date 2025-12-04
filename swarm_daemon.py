@@ -1152,8 +1152,8 @@ def check_idea_consolidation(iteration: int, provider: str = "claude", model: st
     Returns:
         True if consolidation was performed, False otherwise
     """
-    # Only run every 10 iterations
-    if iteration % 10 != 0 or iteration == 0:
+    # Only run every 10 iterations (skip iteration 0 to allow daemon to start)
+    if iteration == 0 or iteration % 10 != 0:
         return False
     
     logger.info("Stream of Consciousness: Checking recent Ideas for consolidation...")
