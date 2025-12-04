@@ -1721,6 +1721,138 @@ def parse_actions(response):
     return actions
 
 
+def generate_project_hud() -> str:
+    """
+    Generate the PROJECT HUD string for the Context Nexus.
+    
+    The HUD shows:
+    1. Current Date/Time
+    2. Top 5 OPEN Tasks
+    3. MANDATE/CRITICAL memories
+    
+    This is the "Source of Truth" for the agent's current context.
+    """
+    from datetime import datetime
+    
+    # Get current date/time
+    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    current_date = datetime.now().strftime('%A, %B %d, %Y')
+    
+    # Query open tasks
+    open_tasks_output, _ = call_mem_db("query", "t=T", "choice=OPEN", "limit=5", "--json")
+    
+    # Query mandates (high importance decisions)
+    mandates_output, _ = call_mem_db("query", "t=d", "importance=H", "limit=5", "--json")
+    
+    # Build HUD string
+    hud_lines = [
+        "╔══════════════════════════════════════════════════════════════════════════════╗",
+        "║                       🎯 PROJECT HUD - CONTEXT NEXUS                         ║",
+        "╠══════════════════════════════════════════════════════════════════════════════╣",
+        f"║  📅 {current_date:<72} ║",
+        f"║  🕐 {current_time:<72} ║",
+        "╠══════════════════════════════════════════════════════════════════════════════╣",
+        "║                            📋 OPEN TASKS (Top 5)                             ║",
+        "╠══════════════════════════════════════════════════════════════════════════════╣",
+    ]
+    
+    # Parse and add open tasks
+    if open_tasks_output and open_tasks_output.strip():
+        task_num = 1
+        for line in open_tasks_output.strip().split('\n'):
+            if not line.strip():
+                continue
+            try:
+                import json as json_mod
+                data = json_mod.loads(line)
+                topic = data[1] if len(data) > 1 and data[1] else "general"
+                text = (data[2] if len(data) > 2 and data[2] else "?")[:55]
+                hud_lines.append(f"║  {task_num}. [{topic[:12]:<12}] {text:<55} ║")
+                task_num += 1
+            except (json.JSONDecodeError, IndexError):
+                continue
+        if task_num == 1:  # No tasks added
+            hud_lines.append(f"║  {'(No open tasks)':<76} ║")
+    else:
+        hud_lines.append(f"║  {'(No open tasks)':<76} ║")
+    
+    hud_lines.extend([
+        "╠══════════════════════════════════════════════════════════════════════════════╣",
+        "║                       ⚠️  MANDATES (Critical Rules)                          ║",
+        "╠══════════════════════════════════════════════════════════════════════════════╣",
+    ])
+    
+    # Parse and add mandates
+    has_mandates = False
+    if mandates_output and mandates_output.strip():
+        for line in mandates_output.strip().split('\n'):
+            if not line.strip():
+                continue
+            try:
+                import json as json_mod
+                data = json_mod.loads(line)
+                topic = data[1] if len(data) > 1 and data[1] else "policy"
+                text = (data[2] if len(data) > 2 and data[2] else "?")[:55]
+                choice = data[3] if len(data) > 3 and data[3] else ""
+                if choice:
+                    hud_lines.append(f"║  🔒 [{topic[:10]:<10}] {text:<45} → {choice:<8} ║")
+                else:
+                    hud_lines.append(f"║  🔒 [{topic[:10]:<10}] {text:<60} ║")
+                has_mandates = True
+            except (json.JSONDecodeError, IndexError):
+                continue
+    
+    if not has_mandates:
+        hud_lines.append(f"║  {'(No critical mandates)':<76} ║")
+    
+    hud_lines.append("╚══════════════════════════════════════════════════════════════════════════════╝")
+    hud_lines.append("")
+    hud_lines.append("This HUD is the SOURCE OF TRUTH. Respect all MANDATEs as constraints.")
+    hud_lines.append("")
+    
+    return '\n'.join(hud_lines)
+
+
+def get_mandate_memories() -> str:
+    """
+    Get high-importance memories to inject as MANDATES after the objective.
+    
+    These act as constraints that the agent must respect.
+    """
+    mandates_output, _ = call_mem_db("query", "t=d", "importance=H", "limit=10", "--json")
+    
+    if not mandates_output or not mandates_output.strip():
+        return ""
+    
+    mandate_lines = [
+        "",
+        "═══════════════════════════════════════════════════════════════════════════════",
+        "MANDATES - These are CRITICAL constraints you MUST respect:",
+        "═══════════════════════════════════════════════════════════════════════════════",
+    ]
+    
+    for line in mandates_output.strip().split('\n'):
+        if not line.strip():
+            continue
+        try:
+            import json as json_mod
+            data = json_mod.loads(line)
+            topic = data[1] if len(data) > 1 and data[1] else "policy"
+            text = data[2] if len(data) > 2 and data[2] else "?"
+            choice = data[3] if len(data) > 3 and data[3] else ""
+            if choice:
+                mandate_lines.append(f"• [{topic}] {text} → Decision: {choice}")
+            else:
+                mandate_lines.append(f"• [{topic}] {text}")
+        except (json.JSONDecodeError, IndexError):
+            continue
+    
+    mandate_lines.append("═══════════════════════════════════════════════════════════════════════════════")
+    mandate_lines.append("")
+    
+    return '\n'.join(mandate_lines)
+
+
 def build_prompt(state, repo_root: Path, unrestricted: bool, last_results=None):
     """Build prompt for LLM with context"""
 
@@ -1790,7 +1922,15 @@ def build_prompt(state, repo_root: Path, unrestricted: bool, last_results=None):
     if orch_state is not None:
         orch_system_prompt = ORCHESTRATOR_SYSTEM_PROMPT + "\n" + "=" * 60 + "\n\n"
 
-    prompt = f"""{orch_system_prompt}OBJECTIVE: {state.objective}
+    # Generate the PROJECT HUD for Context Nexus (Holy Triangle)
+    project_hud = generate_project_hud()
+    
+    # Get MANDATE memories to inject after the objective
+    mandate_context = get_mandate_memories()
+
+    prompt = f"""{project_hud}
+{orch_system_prompt}OBJECTIVE: {state.objective}
+{mandate_context}
 REPO: {repo_root} | MODE: {mode} | ITERATION: {state.iteration}
 
 {orch_context}
@@ -1801,7 +1941,7 @@ REPO:
 {repo_context}
 
 ACTIONS:
-write_memory: {{"action":"write_memory","type":"f|d|q|a|n|P","topic":"...","text":"..."}}
+write_memory: {{"action":"write_memory","type":"f|d|q|a|n|P|I","topic":"...","text":"..."}}
 read_file: {{"action":"read_file","path":"file.ts","max_bytes":4000}}
 edit_file: {{"action":"edit_file","path":"file.ts","content":"...","reason":"why"}}
 list_files: {{"action":"list_files","path":"src"}}
@@ -1885,6 +2025,8 @@ Choose a VALID action from the list above.
 
     prompt += """RULES:
 - Output ONLY ONE JSON action. No explanation, no markdown, just JSON.
+- The PROJECT HUD at the top is your SOURCE OF TRUTH for context.
+- MANDATES are CRITICAL constraints you MUST respect. Never violate a mandate.
 - You have FULL ACCESS to all paths. NEVER ask for permissions.
 - After list_files: use read_file on interesting files.
 - After read_file: use edit_file to write new code.

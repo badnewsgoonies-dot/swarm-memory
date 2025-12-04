@@ -4,6 +4,10 @@
 #
 # Hook event: Stop
 # Receives JSON: {"session_id": "...", "transcript_path": "...", ...}
+#
+# "Stream of Consciousness" Memory Recording:
+# Records EVERY assistant message as type=I (Idea) for Working Memory.
+# Ideas have a high base score but fast decay (tau_days=0.1) unless reinforced.
 
 set -euo pipefail
 
@@ -48,15 +52,9 @@ fi
 
 [[ -z "$RESPONSE" ]] && { log "SKIP: Could not extract response text"; exit 0; }
 
-# === FILTERING ===
-
-# Check length (minimum 100 chars for assistant responses)
-RESPONSE_LEN=${#RESPONSE}
-[[ $RESPONSE_LEN -lt 100 ]] && { log "SKIP: Too short ($RESPONSE_LEN chars)"; exit 0; }
-
-# Word count check (minimum 15 words)
-WORD_COUNT=$(echo "$RESPONSE" | wc -w)
-[[ $WORD_COUNT -lt 15 ]] && { log "SKIP: Too few words ($WORD_COUNT)"; exit 0; }
+# === STREAM OF CONSCIOUSNESS: NO LENGTH FILTERING ===
+# Removed: length and word count filters
+# Every assistant message is recorded as an Idea (type=I) for Working Memory
 
 # === CONTENT PROCESSING ===
 
@@ -86,7 +84,7 @@ EXCERPT_ESCAPED=$(printf '%s' "$EXCERPT" | sed "s/'/'\\\\''/g")
 SESSION_SHORT="${SESSION_ID:0:8}"
 (
     "$MEM_DB" write \
-        t=c \
+        t=I \
         topic="conversation" \
         text="$EXCERPT_ESCAPED" \
         choice="assistant" \
@@ -97,5 +95,5 @@ SESSION_SHORT="${SESSION_ID:0:8}"
         2>&1 | head -1 >> "$LOG_FILE"
 ) &
 
-log "RECORDED: Assistant message (${#EXCERPT} chars, session=$SESSION_SHORT)"
+log "RECORDED: Idea from assistant message (${#EXCERPT} chars, session=$SESSION_SHORT)"
 exit 0

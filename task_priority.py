@@ -34,6 +34,31 @@ class WeightConfig:
     topic_bonus: float = 0.15
     project_bonus: float = 0.1
     link_bonus: float = 0.08
+    # Type-specific tau values for Working Memory (fast decay types)
+    tau_idea: float = 0.1  # Ideas (I) decay very fast unless reinforced
+    tau_conversation: float = 1.0  # Conversations decay faster than default
+    # Type weights: Decision/Edit > Note > Conversation/Chat
+    type_weights: dict = field(
+        default_factory=lambda: {
+            'd': 1.2,  # Decision - high weight
+            'e': 1.1,  # Edit - elevated weight
+            'f': 1.0,  # Fact - normal weight
+            'a': 1.0,  # Action - normal weight
+            'q': 0.9,  # Question - slightly lower
+            'n': 0.8,  # Note - lower weight
+            'c': 0.6,  # Conversation/Chat - lowest weight
+            'I': 0.9,  # Idea - high initially but decays fast
+            # Task types
+            'T': 1.3,  # TODO - very high
+            'G': 1.3,  # GOAL - very high
+            'M': 1.0,  # ATTEMPT - normal
+            'R': 1.1,  # RESULT - elevated
+            'L': 1.2,  # LESSON - high
+            'P': 1.0,  # PHASE - normal
+        }
+    )
+    # Topic locking boost for entries matching active task
+    active_task_boost: float = 0.5
     risk_keywords: Tuple[str, ...] = field(
         default_factory=lambda: (
             "blocker",
@@ -138,23 +163,52 @@ def lexical_similarity(a: str, b: str) -> float:
     return inter / union if union else 0.0
 
 
-def importance_score(label: Optional[str]) -> tuple[float, float]:
+def importance_score(label: Optional[str]) -> tuple[float, float, bool]:
     """
-    Map importance label to score and recency tau multiplier.
+    Map importance label to score, recency tau multiplier, and immortal flag.
 
     Returns:
-        (importance_value, tau_multiplier)
+        (importance_value, tau_multiplier, is_immortal)
+        
+    Immortal Memories: When importance is H/High/Critical, the memory is
+    "immortal" - its recency score should be 1.0 regardless of age.
     """
     if not label:
-        return 0.3, 1.0
+        return 0.3, 1.0, False
     label = label.lower()
     if label in ("h", "high", "critical"):
-        return 1.0, 1.6
+        # Immortal: these memories never decay
+        return 1.0, 1.6, True
     if label in ("m", "med", "medium"):
-        return 0.5, 1.25
+        return 0.5, 1.25, False
     if label in ("l", "low"):
-        return 0.1, 1.0
-    return 0.3, 1.0
+        return 0.1, 1.0, False
+    return 0.3, 1.0, False
+
+
+def get_type_tau(anchor_type: Optional[str], weights: WeightConfig) -> float:
+    """
+    Get the tau (decay rate) for a specific entry type.
+    
+    Ideas (I) decay very fast (Working Memory), while other types
+    use the default tau_days.
+    """
+    if anchor_type == 'I':
+        return weights.tau_idea
+    if anchor_type == 'c':
+        return weights.tau_conversation
+    return weights.tau_days
+
+
+def get_type_weight(anchor_type: Optional[str], weights: WeightConfig) -> float:
+    """
+    Get the type-based weight multiplier for an entry.
+    
+    Decision/Edit > Note > Conversation/Chat
+    """
+    if not anchor_type:
+        return 1.0
+    return weights.type_weights.get(anchor_type, 1.0)
 
 
 def parse_links(raw: Optional[str]) -> set[str]:
@@ -286,32 +340,80 @@ def priority_score(
     todos: Sequence[Entry],
     weights: WeightConfig,
     now: Optional[datetime] = None,
+    active_task_id: Optional[str] = None,
 ) -> dict:
     """
     Compute priority score and component breakdown for a memory entry.
 
+    Args:
+        entry: The memory entry to score
+        todos: List of open TODO entries for alignment scoring
+        weights: Weight configuration
+        now: Current time (defaults to now)
+        active_task_id: If set, entries linked to this task get a massive boost (Topic Locking)
+
     Returns:
         {
             "score": float,
-            "components": {"recency": R, "importance": I, "todo": T, "urgency": E},
+            "components": {"recency": R, "importance": I, "todo": T, "urgency": E, "type_weight": W, "task_boost": B},
             "matched_todo": todo_entry or None,
-            "age_days": float
+            "age_days": float,
+            "is_immortal": bool
         }
     """
     now = now or datetime.now(timezone.utc)
     ts = parse_timestamp(entry.timestamp)
     age_days = (now - ts).total_seconds() / 86_400.0
-    imp_value, tau_multiplier = importance_score(entry.importance)
-    recency = temporal_decay_score(ts, now=now, tau_days=weights.tau_days * tau_multiplier)
+    
+    # Get importance score and check for immortality
+    imp_value, tau_multiplier, is_immortal = importance_score(entry.importance)
+    
+    # Get type-specific tau for decay calculation
+    base_tau = get_type_tau(entry.anchor_type, weights)
+    effective_tau = base_tau * tau_multiplier
+    
+    # Calculate recency - immortal memories always have recency=1.0
+    if is_immortal:
+        recency = 1.0
+    else:
+        recency = temporal_decay_score(ts, now=now, tau_days=effective_tau)
+    
+    # Get type weight multiplier
+    type_weight = get_type_weight(entry.anchor_type, weights)
+    
+    # Calculate TODO alignment
     todo_alignment, matched = best_todo_alignment(entry, todos, weights)
+    
+    # Calculate urgency
     urgency = urgency_score(entry, matched, now, weights)
+    
+    # Topic Locking: boost for active task
+    task_boost = 0.0
+    if active_task_id:
+        # Check if entry is linked to the active task (exact match in raw links)
+        raw_links = entry.links or ""
+        if active_task_id in raw_links:
+            task_boost = weights.active_task_boost
+        # Also check parsed links (handles JSON/CSV formats)
+        elif not task_boost:
+            entry_links = parse_links(entry.links)
+            if active_task_id in entry_links:
+                task_boost = weights.active_task_boost
+        # Also check topic match
+        if not task_boost and entry.topic and active_task_id.lower() in entry.topic.lower():
+            task_boost = weights.active_task_boost * 0.5  # Partial boost for topic match
 
-    score = (
+    # Calculate final score with type weight
+    base_score = (
         weights.w_recency * recency
         + weights.w_importance * imp_value
         + weights.w_todo_link * todo_alignment
         + weights.w_urgency * urgency
+        + task_boost
     )
+    
+    # Apply type weight as a multiplier
+    score = base_score * type_weight
 
     return {
         "score": float(score),
@@ -320,8 +422,11 @@ def priority_score(
             "importance": float(imp_value),
             "todo": float(todo_alignment),
             "urgency": float(urgency),
+            "type_weight": float(type_weight),
+            "task_boost": float(task_boost),
         },
         "matched_todo": matched,
         "age_days": age_days,
+        "is_immortal": is_immortal,
     }
 
