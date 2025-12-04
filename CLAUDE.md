@@ -379,6 +379,67 @@ Prefix your objective with "ORCHESTRATE:" to enable orchestration mode:
 4. **AUDIT phase** (retry): Re-audits after fix
 5. **DONE**: Completes after audit passes or max rounds reached
 
+### Context Nexus & HUD
+
+The daemon uses a unified Context Nexus system to provide every agent step with a consistent, task-centric, time-aware view of the world.
+
+**What it provides:**
+- **HUD Banner**: Appears at the very top of every prompt
+- **Current time**: UTC timestamp for temporal awareness
+- **Active task**: The currently executing TODO/GOAL with topic, importance, status
+- **Task queue**: Next 5 OPEN tasks waiting for execution
+- **Mandates**: High-importance decisions that must be respected
+- **Relevant lessons**: Task-specific and global lessons from memory
+
+**HUD Example:**
+```
+==============================================================================
+🕒 TIME
+==============================================================================
+Now: 2025-12-04T03:21:00Z
+
+==============================================================================
+📋 OFFICIAL TASK HUD
+==============================================================================
+[ACTIVE] orch-test-001 | topic=orch-test | importance=M
+        ORCHESTRATE: Run pnpm build in vale-village-v2 and verify success.
+
+[QUEUE]
+[ ] port-004  | VV2-port | H | Port BattleView.tsx from v1 to v2
+[ ] vv2-002   | VV2      | H | Port inventorySlice to Zustand
+
+==============================================================================
+🧱 MANDATES / DECISIONS
+==============================================================================
+- [D] VV2: Do not change DB schema without human approval.
+- [D] VV2: Use Preact + Zustand for v2 UI, not React.
+
+==============================================================================
+📚 RELEVANT LESSONS
+==============================================================================
+- [L] VV2: When integrating Zustand + immer, always install immer explicitly.
+- [L] VV2-port: When porting components, review version change logs first.
+```
+
+**CLI Testing:**
+```bash
+# Test HUD generation directly
+python3 context_nexus.py --task orch-test-001 --topic orch-test
+
+# Output as JSON for programmatic use
+python3 context_nexus.py --task orch-test-001 --json
+
+# Check with a specific memory database
+python3 context_nexus.py --db /path/to/memory.db --task my-task-001
+```
+
+**Scoring Algorithm:**
+The Context Nexus uses a unified scoring function that combines:
+- **Importance**: H=3.0, M=2.0, L=1.0 (H importance memories are "immortal" - no decay)
+- **Time decay**: exp(-age_days/tau) where tau=7 days (disabled for H importance)
+- **Task alignment**: 5x boost for memories directly linked to active task
+- **Mandate bonus**: 3x for decisions, 2.5x for lessons
+
 ### Embeddings
 
 Local embeddings using sentence-transformers (`all-MiniLM-L6-v2`, 384 dimensions). Requires Python venv:

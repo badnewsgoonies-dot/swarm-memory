@@ -48,6 +48,9 @@ from pathlib import Path
 # Import governor for action enforcement
 from governor import Governor
 
+# Import context nexus for unified HUD
+from context_nexus import build_context, render_hud
+
 
 # =============================================================================
 # FILE LOCKING UTILITIES
@@ -2024,12 +2027,18 @@ def parse_actions(response):
 def build_prompt(state, repo_root: Path, unrestricted: bool, last_results=None):
     """Build prompt for LLM with context.
 
-    Uses "post-prompt injection" pattern to fight recency bias:
+    Uses Context Nexus for unified HUD and "post-prompt injection" pattern:
+    - HUD banner at the very top shows time, active task, queue, mandates, lessons
     - Context memories (low/medium importance) placed BEFORE the objective
     - Directive memories (high importance, decisions, lessons) placed AFTER the objective
 
     This ensures critical memories carry equal weight with the user's prompt.
     """
+    from datetime import timezone as tz
+
+    # Initialize task tracking for HUD
+    active_task_id = None
+    active_topic = None
 
     # Split memories into context (background) and directives (constraints)
     context_memories, directive_memories = split_memories_by_importance(limit=20, recent="24h")
@@ -2070,6 +2079,10 @@ def build_prompt(state, repo_root: Path, unrestricted: bool, last_results=None):
             if not task_id:
                 task_id = f"orch-{hashlib.md5(actual_objective.encode()).hexdigest()[:8]}"
 
+            # Save for HUD generation
+            active_task_id = task_id
+            active_topic = topic
+
             # Create orchestration state and load from memory
             orch_state = OrchestrationState(
                 task_id=task_id,
@@ -2098,6 +2111,31 @@ def build_prompt(state, repo_root: Path, unrestricted: bool, last_results=None):
     if orch_state is not None:
         orch_system_prompt = ORCHESTRATOR_SYSTEM_PROMPT + "\n" + "=" * 60 + "\n\n"
 
+    # ==========================================================================
+    # BUILD CONTEXT NEXUS HUD
+    # ==========================================================================
+    # The HUD provides a consistent, task-centric, time-aware view for every agent step.
+    # It includes: current time, active task, task queue, mandates, relevant lessons.
+    hud_text = ""
+    try:
+        from datetime import datetime as dt
+        now = dt.now(tz.utc)
+        db_path = str(SCRIPT_DIR / "memory.db")
+
+        nexus_context = build_context(
+            db_path=db_path,
+            active_task_id=active_task_id,
+            topic=active_topic,
+            now=now,
+            max_memories=32,
+            recent_hours=48
+        )
+        hud_text = render_hud(nexus_context, active_task_id=active_task_id)
+        logger.debug(f"Context Nexus HUD generated ({len(hud_text)} chars)")
+    except Exception as e:
+        logger.warning(f"Failed to generate Context Nexus HUD: {e}")
+        hud_text = ""
+
     # Build directive section for post-prompt injection
     directive_section = ""
     if directive_memories:
@@ -2108,7 +2146,14 @@ def build_prompt(state, repo_root: Path, unrestricted: bool, last_results=None):
 {directive_memories}
 """
 
-    prompt = f"""{orch_system_prompt}# CONTEXTUAL MEMORY (Background Information)
+    # Prepend HUD at the very top of the prompt for consistent context
+    hud_header = ""
+    if hud_text:
+        hud_header = f"""{hud_text}
+
+"""
+
+    prompt = f"""{hud_header}{orch_system_prompt}# CONTEXTUAL MEMORY (Background Information)
 {context_memories}
 
 # REPO STATE
