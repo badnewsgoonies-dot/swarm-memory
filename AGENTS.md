@@ -58,6 +58,26 @@ When setting status to BLOCKED, agents MUST also log a reason:
 - Workers set status to BLOCKED on failure, never revert BLOCKED to OPEN
 - Only humans or manager agents with explicit intent may reopen blocked tasks
 
+## Working Memory (Ideas)
+
+Ideas (`I` type) are short-term memory with fast decay (~30min tau). They're auto-captured from assistant messages and consolidated into long-term memory.
+
+### Idea Consolidation
+- Runs every 10 daemon iterations and at task completion
+- LLM analyzes Ideas and promotes valuable ones to F/D/L types
+- Discards noise (greetings, status updates, repetitive content)
+
+### Querying Ideas
+```bash
+./mem-db.sh query t=I recent=1h           # Recent ideas
+./mem-db.sh query t=I recent=24h limit=50 # All unconsolidated ideas
+```
+
+### Consolidation Triggers
+- Periodic: Every 10 iterations in `swarm_daemon.py`
+- Completion: When daemon finishes (DONE/BLOCKED status)
+- Manual: Can call `consolidate_ideas()` directly
+
 ## Coding Style & Naming Conventions
 - Python: PEP 8, 4-space indents, argparse-based CLIs with docstrings; prefer pure functions and explicit error messages. Keep embeddings model metadata (`embedding_model`, `embedding_dim`) consistent with `MODELS` in `mem-embed.py`.
 - Bash: `set -euo pipefail`, lowercase functions, quote variables, and accept filters as `key=value` to match `mem-search.sh`/`mem-db.sh`.

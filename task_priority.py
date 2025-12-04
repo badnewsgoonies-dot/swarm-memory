@@ -286,6 +286,33 @@ def urgency_score(entry: Entry, matched_todo: Optional[Entry], now: datetime, we
     return max(due_component, risk_component)
 
 
+def idea_score(entry: Entry, now: datetime) -> dict:
+    """
+    Compute fast-decay score for Idea (I) type entries.
+
+    Ideas are short-term working memory with ~30 minute tau decay.
+    Ideas older than 4 hours are completely ignored (return score 0).
+
+    Returns:
+        {"score": float, "age_minutes": float, "is_expired": bool}
+    """
+    ts = parse_timestamp(entry.timestamp)
+    age_minutes = (now - ts).total_seconds() / 60.0
+
+    # Expire Ideas older than 4 hours (240 minutes)
+    if age_minutes > 240:
+        return {"score": 0.0, "age_minutes": age_minutes, "is_expired": True}
+
+    # Fast decay: tau ~30 minutes
+    tau_minutes = 30.0
+    recency = math.exp(-age_minutes / tau_minutes)
+
+    # Base score is just recency - Ideas don't get importance/todo boosts
+    score = recency
+
+    return {"score": float(score), "age_minutes": age_minutes, "is_expired": False}
+
+
 def priority_score(
     entry: Entry,
     todos: Sequence[Entry],
@@ -301,12 +328,33 @@ def priority_score(
             "components": {"recency": R, "importance": I, "todo": T, "urgency": E},
             "matched_todo": todo_entry or None,
             "age_days": float,
-            "is_immortal": bool
+            "is_immortal": bool,
+            "is_idea": bool  # True if this is a fast-decay Idea
         }
     """
     now = now or datetime.now(timezone.utc)
     ts = parse_timestamp(entry.timestamp)
     age_days = (now - ts).total_seconds() / 86_400.0
+
+    # Special handling for Ideas (I type) - use fast decay scoring
+    if entry.anchor_type == "I":
+        idea_result = idea_score(entry, now)
+        return {
+            "score": idea_result["score"],
+            "components": {
+                "recency": idea_result["score"],  # Recency is the only factor
+                "importance": 0.0,
+                "todo": 0.0,
+                "urgency": 0.0,
+            },
+            "matched_todo": None,
+            "age_days": age_days,
+            "is_immortal": False,
+            "is_idea": True,
+            "idea_age_minutes": idea_result["age_minutes"],
+            "idea_expired": idea_result["is_expired"],
+        }
+
     imp_value, tau_multiplier, is_immortal = importance_score(entry.importance)
 
     # Immortal memories (High/Critical importance) do not decay
@@ -337,5 +385,6 @@ def priority_score(
         "matched_todo": matched,
         "age_days": age_days,
         "is_immortal": is_immortal,
+        "is_idea": False,
     }
 

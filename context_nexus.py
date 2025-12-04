@@ -148,6 +148,11 @@ def score_memory(
     3. Task alignment: huge boost if tied to active task
     4. Mandate bonus: strong bonus for decisions/lessons
 
+    Special handling for Ideas (type 'I'):
+    - Fast decay: ~30 minute tau instead of 7 days
+    - Expiration: Ideas older than 4 hours get score 0
+    - No importance/mandate bonuses
+
     Args:
         mem: The memory entry to score
         active_task_id: Currently active task ID (if any)
@@ -157,6 +162,32 @@ def score_memory(
     Returns:
         Composite score (higher = more relevant)
     """
+    mem_type = (mem.anchor_type or "").upper()
+
+    # Special handling for Ideas (I type) - fast decay short-term memory
+    if mem_type == "I":
+        if mem.timestamp:
+            age_minutes = max((now - mem.timestamp).total_seconds() / 60.0, 0.0)
+            mem.age_days = age_minutes / 1440.0  # Store in days for consistency
+        else:
+            age_minutes = 0.0
+            mem.age_days = 0.0
+
+        # Expire Ideas older than 4 hours (240 minutes)
+        if age_minutes > 240:
+            mem.score = 0.0
+            mem.is_immortal = False
+            return 0.0
+
+        # Fast decay: tau ~30 minutes
+        tau_minutes = 30.0
+        time_factor = math.exp(-age_minutes / tau_minutes)
+
+        # Ideas only get recency score, no other bonuses
+        mem.score = time_factor
+        mem.is_immortal = False
+        return time_factor
+
     # 1. Importance scoring
     imp_label = (mem.importance or "").upper()
     importance_scores = {
@@ -567,7 +598,8 @@ TYPE_LABELS = {
     'c': 'CONV', 'C': 'CONV',
     'T': 'TODO', 'G': 'GOAL',
     'M': 'ATTEMPT', 'R': 'RESULT',
-    'L': 'LESSON', 'P': 'PHASE'
+    'L': 'LESSON', 'P': 'PHASE',
+    'I': 'IDEA', 'i': 'IDEA'
 }
 
 

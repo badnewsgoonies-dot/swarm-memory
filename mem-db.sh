@@ -385,7 +385,9 @@ type_map = {
     'M': 'attempts',
     'R': 'results',
     'L': 'lessons',
-    'P': 'phases'
+    'P': 'phases',
+    # Short-term memory
+    'I': 'ideas'
 }
 
 if type_counts:
@@ -497,6 +499,7 @@ def format_relative_time(ts_str):
 # Core types: d/q/a/f/n/c (decision/question/action/fact/note/conversation)
 # Task types: T/G/M/R/L (todo/goal/attempt/result/lesson) - uppercase to distinguish
 # Phase type: P (phase transition)
+# Short-term memory: I (idea) - fast decay, consolidated to long-term
 def expand_type(t):
     type_map = {
         'd': 'd', 'decision': 'd',
@@ -511,7 +514,9 @@ def expand_type(t):
         'm': 'M', 'attempt': 'M',
         'r': 'R', 'result': 'R',
         'l': 'L', 'lesson': 'L',
-        'p': 'P', 'phase': 'P'
+        'p': 'P', 'phase': 'P',
+        # Short-term memory (uppercase)
+        'i': 'I', 'idea': 'I'
     }
     return type_map.get(t.lower(), t)
 
@@ -644,7 +649,9 @@ else:
         'M': 'ATTEMPT',
         'R': 'RESULT',
         'L': 'LESSON',
-        'P': 'PHASE'
+        'P': 'PHASE',
+        # Short-term memory
+        'I': 'IDEA'
     }
 
     for row in results:
@@ -728,6 +735,7 @@ params_raw = sys.argv[3:]
 # Core types: d/q/a/f/n/c (decision/question/action/fact/note/conversation)
 # Task types: T/G/M/R/L (todo/goal/attempt/result/lesson) - uppercase to distinguish
 # Phase type: P (phase transition)
+# Short-term memory: I (idea) - fast decay, consolidated to long-term
 def expand_type(t):
     type_map = {
         'd': 'd', 'decision': 'd',
@@ -742,7 +750,9 @@ def expand_type(t):
         'm': 'M', 'attempt': 'M',
         'r': 'R', 'result': 'R',
         'l': 'L', 'lesson': 'L',
-        'p': 'P', 'phase': 'P'
+        'p': 'P', 'phase': 'P',
+        # Short-term memory (uppercase)
+        'i': 'I', 'idea': 'I'
     }
     return type_map.get(t.lower(), t)
 
@@ -1127,6 +1137,7 @@ def format_relative_time(ts_str):
 # Core types: d/q/a/f/n/c (decision/question/action/fact/note/conversation)
 # Task types: T/G/M/R/L (todo/goal/attempt/result/lesson) - uppercase to distinguish
 # Phase type: P (phase transition)
+# Short-term memory: I (idea) - fast decay, consolidated to long-term
 def expand_type(t):
     type_map = {
         'd': 'd', 'decision': 'd',
@@ -1141,7 +1152,9 @@ def expand_type(t):
         'm': 'M', 'attempt': 'M',
         'r': 'R', 'result': 'R',
         'l': 'L', 'lesson': 'L',
-        'p': 'P', 'phase': 'P'
+        'p': 'P', 'phase': 'P',
+        # Short-term memory (uppercase)
+        'i': 'I', 'idea': 'I'
     }
     return type_map.get(t.lower(), t)
 
@@ -1149,7 +1162,8 @@ def expand_type(t):
 def type_label(t):
     return {
         'd': 'D', 'q': 'Q', 'a': 'A', 'f': 'F', 'n': 'N', 'c': 'C',
-        'T': 'T', 'G': 'G', 'M': 'M', 'R': 'R', 'L': 'L', 'P': 'P'
+        'T': 'T', 'G': 'G', 'M': 'M', 'R': 'R', 'L': 'L', 'P': 'P',
+        'I': 'I'
     }.get(t, '?')
 
 # Parse filters
@@ -1351,7 +1365,9 @@ type_map = {
     'M': 'attempts',
     'R': 'results',
     'L': 'lessons',
-    'P': 'phases'
+    'P': 'phases',
+    # Short-term memory
+    'I': 'ideas'
 }
 
 type_breakdown = []

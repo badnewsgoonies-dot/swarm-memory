@@ -1280,6 +1280,7 @@ ACTIVE_VOICE_PREFIXES = {
     'T': '[TODO]',            # Pending tasks
     'G': '[GOAL]',            # High-level goals
     'M': '[ATTEMPT]',         # Work attempts
+    'I': '[IDEA]',            # Short-term working memory (fast decay)
 }
 
 
@@ -1389,6 +1390,185 @@ def split_memories_by_importance(
     directive_output = '\n'.join(directive_lines) if directive_lines else ''
 
     return context_output, directive_output
+
+
+# =============================================================================
+# IDEA CONSOLIDATION
+# =============================================================================
+
+# Consolidation LLM prompt template
+IDEA_CONSOLIDATION_PROMPT = """You are the Memory Consolidator for a long-lived autonomous system.
+
+Below are recent fleeting "Idea" entries (short-term working memory).
+
+Your job:
+1. Group related ideas.
+2. For each group, decide:
+   - Should this become a persistent FACT (F)? Use for learned information.
+   - Should this become a DECISION / MANDATE (D)? Use for rules, policies, constraints.
+   - Should this become a LESSON (L)? Use for learnings from attempts/failures.
+   - Or should it be discarded as noise?
+
+3. Output strict JSON (no other text):
+{
+  "promote": [
+    {
+      "type": "F" | "D" | "L",
+      "topic": "short topic slug",
+      "task_id": "linked task id or null",
+      "text": "Distilled summary (1-2 sentences)",
+      "importance": "H" | "M" | "L",
+      "rationale": "Why this is worth keeping"
+    }
+  ],
+  "discard_ids": [list of idea IDs that are noise]
+}
+
+IMPORTANT:
+- Only promote truly valuable information (rules, decisions, facts, lessons).
+- Discard casual conversation, greetings, status updates, repetitive content.
+- Be concise in summaries; distill to essence.
+- Set importance="H" for critical rules/constraints that should never decay.
+
+IDEAS TO CONSOLIDATE:
+"""
+
+
+def consolidate_ideas(
+    db_path: str,
+    topic: Optional[str] = None,
+    active_task_id: Optional[str] = None,
+    min_ideas: int = 5,
+    max_ideas: int = 30,
+    max_age_hours: int = 24,
+    verbose: bool = False
+) -> Dict[str, Any]:
+    """
+    Fetch recent Idea glyphs, ask LLM which should be promoted to long-term
+    memory (Facts/Decisions/Lessons), write promotions back via mem-db.sh.
+
+    Args:
+        db_path: Path to memory database
+        topic: Optional topic filter
+        active_task_id: Current task ID for context
+        min_ideas: Minimum ideas needed before consolidation (default 5)
+        max_ideas: Maximum ideas to process at once (default 30)
+        max_age_hours: Only consider ideas within this age (default 24h)
+        verbose: Log detailed output
+
+    Returns:
+        {"success": bool, "promoted": int, "discarded": int, "error": str or None}
+    """
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        # Fetch recent Ideas
+        cutoff_hours = max_age_hours
+        query = """
+            SELECT id, text, anchor_topic, anchor_choice, task_id, timestamp
+            FROM chunks
+            WHERE anchor_type = 'I'
+              AND timestamp > datetime('now', '-{} hours')
+              AND (status IS NULL OR status = 'active')
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """.format(cutoff_hours)
+
+        cursor.execute(query, (max_ideas,))
+        rows = cursor.fetchall()
+        conn.close()
+
+        if len(rows) < min_ideas:
+            if verbose:
+                logger.info(f"Consolidation skipped: only {len(rows)} ideas (need {min_ideas}+)")
+            return {"success": True, "promoted": 0, "discarded": 0, "skipped": True, "reason": f"Only {len(rows)} ideas"}
+
+        # Build prompt with ideas
+        ideas_text = []
+        idea_ids = []
+        for row in rows:
+            id_, text, idea_topic, choice, task_id_col, timestamp = row
+            idea_ids.append(id_)
+            text_preview = (text or "")[:500]
+            ideas_text.append(f"[ID:{id_}] [topic:{idea_topic or 'general'}] [task:{task_id_col or 'none'}] {text_preview}")
+
+        prompt = IDEA_CONSOLIDATION_PROMPT + "\n".join(ideas_text)
+
+        if verbose:
+            logger.info(f"Consolidating {len(rows)} ideas...")
+
+        # Call LLM
+        response = call_llm(prompt, verbose=verbose)
+        if not response:
+            return {"success": False, "promoted": 0, "discarded": 0, "error": "LLM call failed"}
+
+        # Parse JSON response
+        try:
+            # Extract JSON from response (handle markdown blocks)
+            json_match = re.search(r'\{[\s\S]*\}', response)
+            if not json_match:
+                return {"success": False, "promoted": 0, "discarded": 0, "error": "No JSON in response"}
+
+            result = json.loads(json_match.group())
+            promotions = result.get("promote", [])
+            discard_ids = result.get("discard_ids", [])
+
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.warning(f"Failed to parse consolidation response: {e}")
+            return {"success": False, "promoted": 0, "discarded": 0, "error": f"Parse error: {e}"}
+
+        # Write promotions to memory
+        promoted_count = 0
+        for promo in promotions:
+            try:
+                promo_type = promo.get("type", "F")
+                promo_topic = promo.get("topic", topic or "consolidated")
+                promo_task = promo.get("task_id") or active_task_id or ""
+                promo_text = promo.get("text", "")
+                promo_importance = promo.get("importance", "M")
+                promo_rationale = promo.get("rationale", "")
+
+                if not promo_text:
+                    continue
+
+                args = [
+                    f"t={promo_type}",
+                    f"topic={promo_topic}",
+                    f"text={promo_text}",
+                    f"importance={promo_importance}",
+                    f"source=consolidator"
+                ]
+                if promo_task:
+                    args.append(f"task={promo_task}")
+                if promo_rationale:
+                    args.append(f"rationale={promo_rationale[:200]}")
+
+                output, success = call_mem_db("write", *args)
+                if success:
+                    promoted_count += 1
+                    if verbose:
+                        logger.info(f"Promoted {promo_type}: {promo_text[:80]}...")
+            except Exception as e:
+                logger.warning(f"Failed to write promotion: {e}")
+                continue
+
+        # Mark discarded ideas as deprecated (optional - just log for now)
+        if verbose and discard_ids:
+            logger.info(f"Discarded {len(discard_ids)} ideas as noise")
+
+        return {
+            "success": True,
+            "promoted": promoted_count,
+            "discarded": len(discard_ids),
+            "total_ideas": len(rows)
+        }
+
+    except Exception as e:
+        logger.error(f"Consolidation error: {e}")
+        return {"success": False, "promoted": 0, "discarded": 0, "error": str(e)}
 
 
 def resolve_repo_root(path_str: str) -> Path:
@@ -2435,6 +2615,21 @@ def run_daemon(state, repo_root: Path, unrestricted: bool, verbose=False, log_fu
             state.status = "done"
             state.save()
 
+            # Consolidate Ideas before finishing
+            try:
+                db_path = str(SCRIPT_DIR / "memory.db")
+                consolidation_result = consolidate_ideas(
+                    db_path=db_path,
+                    topic=None,
+                    active_task_id=None,
+                    min_ideas=3,  # Lower threshold at completion
+                    verbose=verbose
+                )
+                if consolidation_result.get("promoted", 0) > 0:
+                    logger.info(f"Consolidated {consolidation_result['promoted']} ideas to long-term memory")
+            except Exception as e:
+                logger.warning(f"Consolidation at completion failed: {e}")
+
             # Write completion to memory
             call_mem_db("write",
                 "t=a",
@@ -2443,6 +2638,22 @@ def run_daemon(state, repo_root: Path, unrestricted: bool, verbose=False, log_fu
                 "choice=done"
             )
             return
+
+        # Periodic consolidation every 10 iterations
+        if state.iteration > 0 and state.iteration % 10 == 0:
+            try:
+                db_path = str(SCRIPT_DIR / "memory.db")
+                consolidation_result = consolidate_ideas(
+                    db_path=db_path,
+                    topic=None,
+                    active_task_id=None,
+                    min_ideas=5,
+                    verbose=verbose
+                )
+                if consolidation_result.get("promoted", 0) > 0:
+                    logger.info(f"Periodic consolidation: promoted {consolidation_result['promoted']} ideas")
+            except Exception as e:
+                logger.debug(f"Periodic consolidation skipped: {e}")
 
         # Small delay between iterations
         time.sleep(1)

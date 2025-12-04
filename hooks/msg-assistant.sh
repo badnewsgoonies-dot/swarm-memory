@@ -84,6 +84,8 @@ EXCERPT_ESCAPED=$(printf '%s' "$EXCERPT" | sed "s/'/'\\\\''/g")
 # === RECORD TO MEMORY ===
 
 SESSION_SHORT="${SESSION_ID:0:8}"
+
+# Record as conversation (existing behavior)
 (
     "$MEM_DB" write \
         t=c \
@@ -96,6 +98,57 @@ SESSION_SHORT="${SESSION_ID:0:8}"
         chat_id="$SESSION_ID" \
         2>&1 | head -1 >> "$LOG_FILE"
 ) &
+
+# === ALSO RECORD AS IDEA (SHORT-TERM MEMORY) ===
+# Ideas are fleeting thoughts that get consolidated into long-term memories
+# by the consolidator. They have fast decay (~30 min tau) and are automatically
+# promoted to Facts/Decisions/Lessons when important.
+
+# Rate limiting: check if we recorded an Idea in the last 30 seconds
+IDEA_RATE_FILE="/tmp/swarm-idea-rate-${SESSION_SHORT}"
+IDEA_MIN_INTERVAL=30
+
+should_record_idea() {
+    if [[ ! -f "$IDEA_RATE_FILE" ]]; then
+        return 0  # No rate file, allow recording
+    fi
+
+    local last_time
+    last_time=$(cat "$IDEA_RATE_FILE" 2>/dev/null || echo 0)
+    local now
+    now=$(date +%s)
+    local elapsed=$((now - last_time))
+
+    [[ $elapsed -ge $IDEA_MIN_INTERVAL ]]
+}
+
+if should_record_idea; then
+    # Create shorter excerpt for Ideas (max 2000 chars)
+    IDEA_EXCERPT="$RESPONSE"
+    if [[ ${#IDEA_EXCERPT} -gt 2000 ]]; then
+        IDEA_EXCERPT="${IDEA_EXCERPT:0:2000}..."
+    fi
+    IDEA_ESCAPED=$(printf '%s' "$IDEA_EXCERPT" | sed "s/'/'\\\\''/g")
+
+    # Record Idea asynchronously
+    (
+        "$MEM_DB" write \
+            t=I \
+            topic="session:${SESSION_SHORT}" \
+            text="$IDEA_ESCAPED" \
+            choice="fleeting" \
+            session="$SESSION_SHORT" \
+            source="assistant" \
+            scope="chat" \
+            chat_id="$SESSION_ID" \
+            2>&1 | head -1 >> "$LOG_FILE"
+
+        # Update rate limit timestamp
+        date +%s > "$IDEA_RATE_FILE"
+    ) &
+
+    log "RECORDED: Idea glyph (${#IDEA_EXCERPT} chars, session=$SESSION_SHORT)"
+fi
 
 log "RECORDED: Assistant message (${#EXCERPT} chars, session=$SESSION_SHORT)"
 exit 0

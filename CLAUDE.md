@@ -104,6 +104,11 @@ curl -X POST http://10.0.0.X:8765/llm \
 | Lesson | `L` | Learnings from attempts |
 | Phase | `P` | Orchestrator phase transitions |
 
+**Short-term memory (uppercase):**
+| Type | Letter | Use for |
+|------|--------|---------|
+| Idea | `I` | Fleeting thoughts, auto-captured from assistant messages |
+
 **PHASE glyph details:**
 - `anchor_choice` = transition label (e.g., `IMPLEMENT->AUDIT`, `AUDIT->FIX`)
 - `task_id` = the TODO/GOAL id (e.g., `vv2-001`, `port-003`)
@@ -251,6 +256,74 @@ User prompts and assistant responses are automatically captured to memory via ho
 - Type: `c` (conversation)
 - Choice field: `user` or `assistant`
 - Scope: `chat` (session-specific)
+
+## Working Memory (Idea Glyphs)
+
+The memory system includes short-term "Idea" glyphs that capture fleeting thoughts and are automatically consolidated into long-term memory.
+
+### How Ideas Work
+
+1. **Auto-capture**: Assistant messages are recorded as Idea glyphs (type `I`)
+2. **Fast decay**: Ideas have ~30 minute tau decay (vs 7 days for normal memories)
+3. **Expiration**: Ideas older than 4 hours are ignored in context retrieval
+4. **Consolidation**: Ideas are automatically promoted to Facts/Decisions/Lessons
+
+### Automatic Recording
+
+Every assistant message (≥100 chars) is recorded as an Idea glyph with:
+- `anchor_type = 'I'`
+- `anchor_topic = 'session:<session_id>'`
+- `anchor_choice = 'fleeting'`
+- Rate limited: max 1 Idea per 30 seconds per session
+
+### Consolidation Process
+
+The consolidator runs:
+- Every 10 daemon iterations
+- When a task completes (DONE or BLOCKED)
+
+The LLM analyzes recent Ideas and decides:
+- **FACT (F)**: Learned information worth keeping
+- **DECISION (D)**: Rules, policies, constraints (becomes a MANDATE)
+- **LESSON (L)**: Learnings from attempts or failures
+- **Discard**: Noise, greetings, status updates
+
+### Querying Ideas
+
+```bash
+# Recent ideas (last hour)
+./mem-db.sh query t=I recent=1h
+
+# Ideas for a specific session
+./mem-db.sh query t=I topic=session:abc12345
+
+# All unconsolidated ideas
+./mem-db.sh query t=I recent=24h limit=50
+```
+
+### Why Ideas Exist
+
+Instead of:
+- Manually saying "please remember this"
+- Losing important context when sessions end
+- Flooding long-term memory with noise
+
+Ideas provide:
+- Automatic capture of potentially useful information
+- Fast decay so old ideas don't clutter context
+- Intelligent consolidation to long-term memory
+- No need to explicitly mark things as important
+
+### Manual Promotion
+
+If you want to immediately promote something to long-term memory:
+```bash
+# Write directly as a Decision (won't auto-decay)
+./mem-db.sh write t=d topic=my-topic text="Important rule here" importance=H
+
+# Write as a Lesson
+./mem-db.sh write t=L topic=my-topic text="What I learned" importance=M
+```
 
 ## Architecture
 
