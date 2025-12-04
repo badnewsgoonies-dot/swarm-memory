@@ -1,0 +1,45 @@
+[gd_scene load_steps=4 format=3 uid="uid://turret_scene"]
+
+[ext_resource type="Script" path="res://Scripts/Enemies/SprocketTurret.cs" id="1_script"]
+[ext_resource type="PackedScene" uid="uid://projectile_scene" path="res://Scenes/Effects/Projectile.tscn" id="2_projectile"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_body"]
+size = Vector2(28, 28)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_hitbox"]
+size = Vector2(32, 32)
+
+[node name="SprocketTurret" type="CharacterBody2D" groups=["Enemies"]]
+collision_layer = 2
+collision_mask = 21
+script = ExtResource("1_script")
+ProjectileScene = ExtResource("2_projectile")
+MaxHP = 4
+ContactDamage = 1
+MoveSpeed = 0.0
+FireInterval = 2.0
+ProjectileSpeed = 300.0
+Range = 300.0
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("RectangleShape2D_body")
+
+[node name="Base" type="Sprite2D" parent="."]
+scale = Vector2(2, 2)
+modulate = Color(0.5, 0.5, 0.6, 1)
+
+[node name="Barrel" type="Node2D" parent="."]
+
+[node name="BarrelSprite" type="Sprite2D" parent="Barrel"]
+position = Vector2(12, 0)
+scale = Vector2(1.5, 0.5)
+modulate = Color(0.6, 0.6, 0.7, 1)
+
+[node name="HitBox" type="Area2D" parent="."]
+collision_layer = 2
+collision_mask = 1
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="HitBox"]
+shape = SubResource("RectangleShape2D_hitbox")
+
+[node name="AnimationPlayer" type="AnimationPlayer" parent="."]

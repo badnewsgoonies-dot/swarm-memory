@@ -1,0 +1,51 @@
+[gd_scene load_steps=4 format=3 uid="uid://boss_scene"]
+
+[ext_resource type="Script" path="res://Scripts/Enemies/BrassGuardian.cs" id="1_script"]
+[ext_resource type="PackedScene" uid="uid://ticker_scene" path="res://Scenes/Enemies/Ticker.tscn" id="2_ticker"]
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_body"]
+radius = 28.0
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_hitbox"]
+radius = 32.0
+
+[node name="BrassGuardian" type="CharacterBody2D" groups=["Enemies", "Boss"]]
+collision_layer = 2
+collision_mask = 21
+script = ExtResource("1_script")
+TickerScene = ExtResource("2_ticker")
+MaxHP = 25
+ContactDamage = 2
+MoveSpeed = 60.0
+Phase1Speed = 60.0
+Phase2Speed = 100.0
+Phase2HPThreshold = 15
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("CircleShape2D_body")
+
+[node name="Sprite2D" type="Sprite2D" parent="."]
+scale = Vector2(4, 4)
+modulate = Color(0.7, 0.5, 0.3, 1)
+
+[node name="Eyes" type="Node2D" parent="."]
+visible = false
+
+[node name="LeftEye" type="Sprite2D" parent="Eyes"]
+position = Vector2(-10, -8)
+scale = Vector2(0.3, 0.3)
+modulate = Color(1, 0.3, 0.3, 1)
+
+[node name="RightEye" type="Sprite2D" parent="Eyes"]
+position = Vector2(10, -8)
+scale = Vector2(0.3, 0.3)
+modulate = Color(1, 0.3, 0.3, 1)
+
+[node name="HitBox" type="Area2D" parent="."]
+collision_layer = 2
+collision_mask = 1
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="HitBox"]
+shape = SubResource("CircleShape2D_hitbox")
+
+[node name="AnimationPlayer" type="AnimationPlayer" parent="."]

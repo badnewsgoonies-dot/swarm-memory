@@ -1,0 +1,127 @@
+[gd_scene load_steps=5 format=3 uid="uid://game_scene"]
+
+[ext_resource type="Script" path="res://Scripts/Systems/RoomManager.cs" id="1_room"]
+[ext_resource type="Script" path="res://Scripts/Systems/UpgradeManager.cs" id="2_upgrade"]
+[ext_resource type="Script" path="res://Scripts/UI/HUDController.cs" id="3_hud"]
+[ext_resource type="PackedScene" uid="uid://player_scene" path="res://Scenes/Player/Player.tscn" id="4_player"]
+
+[node name="Game" type="Node2D"]
+
+[node name="RoomManager" type="Node" parent="."]
+script = ExtResource("1_room")
+
+[node name="UpgradeManager" type="Node" parent="."]
+script = ExtResource("2_upgrade")
+
+[node name="World" type="Node2D" parent="."]
+
+[node name="TileMap" type="TileMap" parent="World"]
+
+[node name="Walls" type="StaticBody2D" parent="World" groups=["Walls"]]
+
+[node name="Top" type="CollisionShape2D" parent="World/Walls"]
+position = Vector2(320, -16)
+shape = SubResource("RectangleShape2D_top")
+
+[node name="Bottom" type="CollisionShape2D" parent="World/Walls"]
+position = Vector2(320, 376)
+shape = SubResource("RectangleShape2D_bottom")
+
+[node name="Left" type="CollisionShape2D" parent="World/Walls"]
+position = Vector2(-16, 180)
+shape = SubResource("RectangleShape2D_left")
+
+[node name="Right" type="CollisionShape2D" parent="World/Walls"]
+position = Vector2(656, 180)
+shape = SubResource("RectangleShape2D_right")
+
+[node name="Doors" type="Node2D" parent="World"]
+
+[node name="Entities" type="Node2D" parent="."]
+
+[node name="Player" parent="Entities" instance=ExtResource("4_player")]
+position = Vector2(320, 180)
+
+[node name="Enemies" type="Node2D" parent="Entities"]
+
+[node name="Projectiles" type="Node2D" parent="."]
+
+[node name="Pickups" type="Node2D" parent="."]
+
+[node name="HUD" type="CanvasLayer" parent="."]
+script = ExtResource("3_hud")
+
+[node name="TopBar" type="HBoxContainer" parent="HUD"]
+offset_left = 10.0
+offset_top = 10.0
+offset_right = 630.0
+offset_bottom = 40.0
+
+[node name="HealthContainer" type="HBoxContainer" parent="HUD/TopBar"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Spacer" type="Control" parent="HUD/TopBar"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="FloorLabel" type="Label" parent="HUD/TopBar"]
+layout_mode = 2
+text = "Floor 1"
+
+[node name="Sep1" type="VSeparator" parent="HUD/TopBar"]
+layout_mode = 2
+
+[node name="RoomLabel" type="Label" parent="HUD/TopBar"]
+layout_mode = 2
+text = "Room 1/4"
+
+[node name="Sep2" type="VSeparator" parent="HUD/TopBar"]
+layout_mode = 2
+
+[node name="CogsLabel" type="Label" parent="HUD/TopBar"]
+layout_mode = 2
+text = "Cogs: 0"
+
+[node name="BossHealthBar" type="Control" parent="HUD"]
+visible = false
+anchors_preset = 5
+anchor_left = 0.5
+anchor_right = 0.5
+offset_left = -150.0
+offset_top = 10.0
+offset_right = 150.0
+offset_bottom = 50.0
+grow_horizontal = 2
+
+[node name="BossName" type="Label" parent="HUD/BossHealthBar"]
+layout_mode = 1
+anchors_preset = 10
+anchor_right = 1.0
+offset_bottom = 20.0
+grow_horizontal = 2
+text = "BRASS GUARDIAN"
+horizontal_alignment = 1
+
+[node name="ProgressBar" type="ProgressBar" parent="HUD/BossHealthBar"]
+layout_mode = 1
+anchors_preset = 10
+anchor_right = 1.0
+offset_top = 22.0
+offset_bottom = 40.0
+grow_horizontal = 2
+max_value = 25.0
+value = 25.0
+show_percentage = false
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_top"]
+size = Vector2(640, 32)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_bottom"]
+size = Vector2(640, 32)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_left"]
+size = Vector2(32, 360)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_right"]
+size = Vector2(32, 360)
