@@ -21,3 +21,4 @@ hooks.log
 # Test scripts
 factorial.py
 fibonacci.py
+.github-setup.sh
