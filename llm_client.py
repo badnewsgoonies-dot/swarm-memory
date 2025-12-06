@@ -569,11 +569,15 @@ class LLMClient:
         effort_arg = effort_map.get(effort, "high")
 
         codex_cmd = _cli_cmd("codex")
-        cmd = [codex_cmd, "exec", "-m", model, "-c", f"model_reasoning_effort={effort_arg}", "--full-auto", prompt]
+        cmd = [codex_cmd, "exec", "-m", model, "-c", f"model_reasoning_effort={effort_arg}", "-s", "danger-full-access", prompt]
 
         start = time.time()
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, encoding='utf-8', errors='replace', cwd=cwd)
+            # Add working directory flag if cwd specified
+            if cwd:
+                cmd.insert(-1, '-C')
+                cmd.insert(-1, cwd)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, encoding='utf-8', errors='replace')
             latency = int((time.time() - start) * 1000)
             response = (result.stdout or "") + (result.stderr or "")
             response = response.strip()

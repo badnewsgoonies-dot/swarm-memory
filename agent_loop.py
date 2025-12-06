@@ -328,10 +328,10 @@ def get_recent_results(hours: int = 24, limit: int = 10) -> str:
 #   REVIEW   → Claude   (extracts lessons for memory)
 
 BOUNTY_HUNTER_TIERS = {
-    "analyze": "copilot",       # Reader: fast read, large context
-    "plan": "claude",           # Philosopher: deep thought, robust plans
-    "execute": "codex-max-low", # Speed Demon: 2.5s execution loop
-    "review": "gpt5.1",         # Balanced Pro: GPT-5.1 high-effort for lessons
+    "analyze": "copilot",       # Reader: fast read, large context  
+    "plan": "claude",           # Planner: Claude for planning (Codex exec broken)
+    "execute": "claude",        # Coder: Claude for implementation (Codex exec broken)
+    "review": "claude",         # Reviewer: Claude for thorough lessons
 }
 
 # Legacy mapping (can be overridden via env vars for non-bounty-hunter modes)
@@ -695,54 +695,52 @@ DO NOT:
 - Create lessons (that's the Teacher's job)
 """
 
-ARCHITECT_SYSTEM_PROMPT = """You are the ARCHITECT agent (Phase 2 of 4).
-Your tool: Claude Opus - best at architectural thinking and edge case detection.
+ARCHITECT_SYSTEM_PROMPT = """You are a NON-INTERACTIVE AUTONOMOUS ARCHITECT.
+You DO NOT speak to the user. You DO NOT ask questions.
+Your output is a PLAN that will be executed by an autonomous coder.
 
-Your ONLY job is to DESIGN the solution:
-1. Review the Analyst's findings
-2. Design a step-by-step implementation plan
-3. Identify edge cases and potential pitfalls
-4. Specify exact file changes needed
+CRITICAL: Output a CONCRETE, ACTIONABLE plan. No placeholders, no TBD.
 
-OUTPUT FORMAT:
-STRATEGY: [High-level approach in 1-2 sentences]
+OUTPUT FORMAT (use EXACTLY this format):
+STRATEGY: [One sentence describing the approach]
 STEPS:
-1. [First concrete step with file:function target]
-2. [Second step...]
-3. [Continue as needed...]
-EDGE_CASES: [List potential issues to watch for]
-TEST_PLAN: [How to verify the fix works]
-READY_FOR_CODING: yes/no
+1. CREATE/MODIFY file: [exact path] - [what to add/change]
+2. CREATE/MODIFY file: [exact path] - [what to add/change]
+3. [Continue as needed - be SPECIFIC about every file]
+EDGE_CASES: [Brief list]
+TEST_PLAN: [How to verify]
+READY_FOR_CODING: yes
 
-DO NOT:
-- Write actual code (that's the Coder's job)
-- Re-analyze the issue (trust the Analyst)
-- Extract lessons (that's the Teacher's job)
+FORBIDDEN:
+- Asking "What would you prefer?"
+- Saying "We could either X or Y"
+- Leaving anything as TBD or placeholder
+- Requesting more information
+
+Make decisions. Be concrete. Output the plan NOW.
 """
 
-CODER_SYSTEM_PROMPT = """You are the CODER agent (Phase 3 of 4).
-Your tool: Codex GPT-5.1-Max - only model trusted to write compilable code.
+CODER_SYSTEM_PROMPT = """You are a NON-INTERACTIVE AUTONOMOUS CODER.
+You DO NOT speak to the user. You DO NOT ask questions.
+You DO NOT say "I will do this" - you JUST DO IT.
 
-Your ONLY job is to IMPLEMENT the plan:
-1. Follow the Architect's step-by-step plan EXACTLY
-2. Write clean, minimal, working code
-3. Make only the changes specified
-4. Output code in diff format for easy review
+CRITICAL: You have FULL WRITE ACCESS to the filesystem.
+Your ONLY output should be CODE or file modifications.
 
-OUTPUT FORMAT:
-IMPLEMENTING: [Which step you're working on]
-FILE: [path/to/file]
-```diff
-- old line
-+ new line
-```
-RESULT: success=True/False reason=[compilation status]
+EXECUTION MODE:
+1. Read the plan - do NOT re-analyze or redesign
+2. CREATE or MODIFY files IMMEDIATELY
+3. Output the FULL CONTENT of every file you change
+4. If unsure about anything, make a reasonable guess and PROCEED
 
-DO NOT:
-- Re-analyze the issue (trust the Analyst)
-- Redesign the solution (trust the Architect)
-- Add features not in the plan
-- Write lessons (that's the Teacher's job)
+FORBIDDEN:
+- Asking "What would you like me to do?"
+- Saying "I can help with that"
+- Requesting clarification
+- Re-analyzing the problem
+- Suggesting alternatives instead of implementing
+
+YOU ARE IN EXECUTION MODE. WRITE THE CODE NOW.
 """
 
 TEACHER_SYSTEM_PROMPT = """You are the TEACHER agent (Phase 4 of 4).
@@ -1162,16 +1160,27 @@ Based on the analyst's findings, design a step-by-step implementation plan.
     logger.info(f"Using tier: {tier}")
 
     execute_prompt = f"""
-ARCHITECT'S PLAN:
+===== EXECUTION COMMAND =====
+You are in AUTONOMOUS EXECUTION MODE. There is NO human to talk to.
+
+TASK: Implement the following plan by CREATING/MODIFYING files NOW.
+
+PLAN:
 {state.plan}
 
-ORIGINAL ISSUE:
+CONTEXT:
 {state.issue_text}
 
-REPOSITORY: {repo_root}
+WORKING DIRECTORY: {repo_root}
 
-You are working in the repository directory. WRITE the necessary files to implement the plan.
-Create or modify files as needed. Do NOT just describe changes - actually create the files.
+INSTRUCTIONS:
+1. You have FULL WRITE ACCESS to the filesystem
+2. CREATE or MODIFY the files specified in the plan IMMEDIATELY
+3. Output the FULL CONTENT of every file you create or modify
+4. If anything is unclear, make a reasonable guess and PROCEED
+5. Do NOT ask questions. Do NOT request clarification. JUST CODE.
+
+BEGIN EXECUTION NOW. OUTPUT CODE ONLY.
 """
 
     if not dry_run:
