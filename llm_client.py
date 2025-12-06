@@ -36,12 +36,13 @@ COPILOT CLI (via copilot -p):
   - gpt-5.1  - GitHub Copilot's default model
 
 Tiers:
-  fast   → llama3.2:3b (Ollama) - Classification, routing
-  code   → qwen2.5-coder:7b (Ollama) - Code generation
-  smart  → gpt-4o-mini (OpenAI) - Cheap cloud reasoning
-  claude → Opus 4.5 (Claude CLI) - Complex work
-  codex  → gpt-5.1-codex-max high (Codex CLI) - High reasoning
-  max    → gpt-5.1-codex-max xhigh (Codex CLI) - Maximum
+  fast      → llama3.2:3b (Ollama) - Classification, routing
+  code      → qwen2.5-coder:7b (Ollama) - Code generation
+  smart     → gpt-4o-mini (OpenAI) - Cheap cloud reasoning
+  gpt4o-api → gpt-4o (OpenAI) - Direct API, parallel-capable (no CLI locks!)
+  claude    → Opus 4.5 (Claude CLI) - Complex work
+  codex     → gpt-5.1-codex-max high (Codex CLI) - High reasoning
+  max       → gpt-5.1-codex-max xhigh (Codex CLI) - Maximum
 
 Usage:
     from llm_client import LLMClient
@@ -118,6 +119,16 @@ MODELS = {
         "description": "Cloud API - cheap & capable (OpenAI)",
         "max_tokens": 4000,
         "timeout": 120,
+    },
+
+    # Tier 3b: GPT4O-API - Direct OpenAI API for parallel agents
+    # This is the "secret sauce" - no CLI locks, supports parallel recursion
+    "gpt4o-api": {
+        "provider": "openai",
+        "model": "gpt-4o",
+        "description": "Direct OpenAI API - No CLI locks, parallel-capable",
+        "max_tokens": 4096,
+        "timeout": 60,
     },
 
     # Tier 4: CLAUDE - Claude CLI for complex work

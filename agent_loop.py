@@ -316,21 +316,21 @@ def get_recent_results(hours: int = 24, limit: int = 10) -> str:
 # PHASE-SPECIFIC TIER ROUTING (Bounty Hunter "Dream Team" Configuration)
 # =============================================================================
 #
-# The Bounty Hunter service uses THREE premium CLI tools on flat-rate plans:
-#   1. copilot -p   → GitHub Copilot (GPT-5.1) - Fast reader/analyzer
-#   2. claude -p    → Claude Opus - Best planner/teacher
-#   3. codex exec   → GPT-5.1-Codex-Max - Only reliable code writer
+# The Bounty Hunter service uses a hybrid approach for maximum parallelism:
+#   1. copilot -p     → GitHub Copilot (GPT-5.1) - Fast reader/analyzer
+#   2. OpenAI API     → GPT-4o direct API - Parallel-capable (no CLI locks!)
+#   3. claude -p      → Claude Opus - Best reviewer/teacher
 #
-# Phase routing (hard-coded for maximum quality):
-#   ANALYZE  → Copilot  (reads issue + repo context)
-#   PLAN     → Claude   (creates architectural strategy)
-#   EXECUTE  → Codex    (writes the actual code)
-#   REVIEW   → Claude   (extracts lessons for memory)
+# Phase routing (optimized for parallel recursion):
+#   ANALYZE  → Copilot   (reads issue + repo context, free tier)
+#   PLAN     → gpt4o-api (OpenAI API - fast, no CLI startup overhead)
+#   EXECUTE  → gpt4o-api (OpenAI API - enables Agent A to spawn Agent B)
+#   REVIEW   → Claude    (extracts lessons for memory, best quality)
 
 BOUNTY_HUNTER_TIERS = {
-    "analyze": "copilot",       # Reader: fast read, large context  
-    "plan": "claude",           # Planner: Claude for planning (Codex exec broken)
-    "execute": "claude",        # Coder: Claude for implementation (Codex exec broken)
+    "analyze": "copilot",       # Reader: Copilot (Free & Good at reading)
+    "plan": "gpt4o-api",        # Planner: Direct OpenAI API (Fast & Smart, no CLI locks)
+    "execute": "gpt4o-api",     # Coder: Direct OpenAI API (supports parallel recursion!)
     "review": "claude",         # Reviewer: Claude for thorough lessons
 }
 
