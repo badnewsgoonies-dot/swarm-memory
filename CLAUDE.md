@@ -34,7 +34,22 @@ The answer is likely already stored. Only explore code if memory doesn't have it
 
 ## Cross-Machine Access (API Server)
 
-Memory can be accessed from other machines via HTTP API:
+Memory can be accessed from other machines via HTTP API.
+
+**If Windows/another machine asks you to start the server, run:**
+```bash
+# 1. Pull latest changes first
+git pull origin master
+
+# 2. Start the memory API server
+python3 ./mem-server.py --port 8765 --host 0.0.0.0 &
+
+# 3. Show your IP address
+ip addr | grep "inet " | grep -v 127.0.0.1
+
+# 4. Optional: Serve files for remote access
+cd /home/geni/Documents && python3 -m http.server 8080 &
+```
 
 **Start server (on Linux box):**
 ```bash
