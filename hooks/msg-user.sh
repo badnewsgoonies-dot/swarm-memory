@@ -22,8 +22,7 @@ fi
 # Escape for storage
 escaped_msg=$(echo "$message" | head -c 500)
 
-# Write to memory
-cd "C:/swarm-memory" || exit 0
+# Write to memory (assumes hook runs from repo root)
 ./mem-db.sh write t=c topic=chat choice=user text="$escaped_msg" 2>/dev/null
 
 exit 0

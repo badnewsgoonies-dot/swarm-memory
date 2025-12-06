@@ -16,8 +16,7 @@ fi
 # Get just the filename
 filename=$(basename "$file_path")
 
-# Write to memory
-cd "C:/swarm-memory" || exit 0
+# Write to memory (assumes hook runs from repo root)
 ./mem-db.sh write t=a topic=edits text="Edited: $filename" 2>/dev/null
 
 exit 0

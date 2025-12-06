@@ -6,7 +6,8 @@ daemon_state.json
 daemon.kill
 notify_state.json
 notify_daemon.kill
-.claude/
+.claude/*
+!.claude/settings.local.json.example
 .claude-tmp/
 .claude.json
 .claude.json.backup

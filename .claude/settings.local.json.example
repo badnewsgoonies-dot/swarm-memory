@@ -1,0 +1,54 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./mem-db.sh:*)",
+      "Bash(./mem-todo.sh:*)",
+      "Bash(./mem-briefing.py:*)",
+      "Bash(bash:*)",
+      "Bash(python3:*)",
+      "Bash(python:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git pull:*)",
+      "Bash(ollama:*)",
+      "Bash(curl:*)",
+      "Bash(jq:*)",
+      "WebSearch"
+    ],
+    "deny": [],
+    "ask": []
+  },
+  "hooks": {
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"[$(date '+%H:%M:%S')] START agent=$CLAUDE_AGENT_ID\" >> ./subagent.log"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"[$(date '+%H:%M:%S')] STOP agent=$CLAUDE_AGENT_ID transcript=$CLAUDE_AGENT_TRANSCRIPT_PATH\" >> ./subagent.log && cat \"$CLAUDE_AGENT_TRANSCRIPT_PATH\" >> ./subagent.log && echo '---' >> ./subagent.log"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ./hooks/msg-user.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
