@@ -313,6 +313,42 @@ def get_recent_results(hours: int = 24, limit: int = 10) -> str:
     return "\n".join(lines) if lines else "(No recent results)"
 
 # =============================================================================
+# PHASE-SPECIFIC TIER ROUTING (Bounty Hunter "Dream Team" Configuration)
+# =============================================================================
+#
+# The Bounty Hunter service uses THREE premium CLI tools on flat-rate plans:
+#   1. copilot -p   → GitHub Copilot (GPT-5.1) - Fast reader/analyzer
+#   2. claude -p    → Claude Opus - Best planner/teacher
+#   3. codex exec   → GPT-5.1-Codex-Max - Only reliable code writer
+#
+# Phase routing (hard-coded for maximum quality):
+#   ANALYZE  → Copilot  (reads issue + repo context)
+#   PLAN     → Claude   (creates architectural strategy)
+#   EXECUTE  → Codex    (writes the actual code)
+#   REVIEW   → Claude   (extracts lessons for memory)
+
+BOUNTY_HUNTER_TIERS = {
+    "analyze": "copilot",      # Reader: handles large context, tuned for "explain this bug"
+    "plan": "claude",          # Architect: robust step-by-step plans, catches edge cases
+    "execute": "gpt5.1",       # Coder: GPT-5.1 with high effort - fastest at 91s
+    "review": "claude",        # Teacher: cleanest, most human-readable lessons
+}
+
+# Legacy mapping (can be overridden via env vars for non-bounty-hunter modes)
+PHASE_TIERS = {
+    "analyst": os.environ.get("TIER_ANALYST", "copilot"),
+    "architect": os.environ.get("TIER_ARCHITECT", "claude"),
+    "coder": os.environ.get("TIER_CODER", "codex-max"),
+    "teacher": os.environ.get("TIER_TEACHER", "claude"),
+}
+
+def get_tier_for_phase(phase: str, bounty_hunter: bool = False, fallback: str = "fast") -> str:
+    """Get the configured tier for a specific workflow phase"""
+    if bounty_hunter:
+        return BOUNTY_HUNTER_TIERS.get(phase.lower(), fallback)
+    return PHASE_TIERS.get(phase.lower(), fallback)
+
+# =============================================================================
 # DOOM LOOP DETECTOR
 # =============================================================================
 
@@ -492,6 +528,103 @@ REVIEW: [Summary of what you observed]
 TODO: id=<unique-id> topic=<topic> importance=<H|M|L> text=<task description>
 TODO: ... (can have multiple)
 FEEDBACK: [Strategic observations for the team]
+"""
+
+# =============================================================================
+# BOUNTY HUNTER PHASE PROMPTS (Dream Team Configuration)
+# =============================================================================
+
+ANALYST_SYSTEM_PROMPT = """You are the ANALYST agent (Phase 1 of 4).
+Your tool: GitHub Copilot (GPT-5.1) - fast, excellent at reading large contexts.
+
+Your ONLY job is to UNDERSTAND the problem:
+1. Read the GitHub issue/bug report
+2. Identify the affected files and functions
+3. Understand the expected vs actual behavior
+4. Note any reproduction steps or error messages
+
+OUTPUT FORMAT:
+ISSUE_SUMMARY: [One-paragraph summary of the bug/feature]
+AFFECTED_FILES: [List of files that likely need changes]
+ROOT_CAUSE: [Your hypothesis about what's wrong]
+REPRODUCTION: [How to trigger/verify the issue]
+READY_FOR_PLANNING: yes/no
+
+DO NOT:
+- Propose solutions (that's the Architect's job)
+- Write any code (that's the Coder's job)
+- Create lessons (that's the Teacher's job)
+"""
+
+ARCHITECT_SYSTEM_PROMPT = """You are the ARCHITECT agent (Phase 2 of 4).
+Your tool: Claude Opus - best at architectural thinking and edge case detection.
+
+Your ONLY job is to DESIGN the solution:
+1. Review the Analyst's findings
+2. Design a step-by-step implementation plan
+3. Identify edge cases and potential pitfalls
+4. Specify exact file changes needed
+
+OUTPUT FORMAT:
+STRATEGY: [High-level approach in 1-2 sentences]
+STEPS:
+1. [First concrete step with file:function target]
+2. [Second step...]
+3. [Continue as needed...]
+EDGE_CASES: [List potential issues to watch for]
+TEST_PLAN: [How to verify the fix works]
+READY_FOR_CODING: yes/no
+
+DO NOT:
+- Write actual code (that's the Coder's job)
+- Re-analyze the issue (trust the Analyst)
+- Extract lessons (that's the Teacher's job)
+"""
+
+CODER_SYSTEM_PROMPT = """You are the CODER agent (Phase 3 of 4).
+Your tool: Codex GPT-5.1-Max - only model trusted to write compilable code.
+
+Your ONLY job is to IMPLEMENT the plan:
+1. Follow the Architect's step-by-step plan EXACTLY
+2. Write clean, minimal, working code
+3. Make only the changes specified
+4. Output code in diff format for easy review
+
+OUTPUT FORMAT:
+IMPLEMENTING: [Which step you're working on]
+FILE: [path/to/file]
+```diff
+- old line
++ new line
+```
+RESULT: success=True/False reason=[compilation status]
+
+DO NOT:
+- Re-analyze the issue (trust the Analyst)
+- Redesign the solution (trust the Architect)
+- Add features not in the plan
+- Write lessons (that's the Teacher's job)
+"""
+
+TEACHER_SYSTEM_PROMPT = """You are the TEACHER agent (Phase 4 of 4).
+Your tool: Claude Opus - best at extracting clean, memorable lessons.
+
+Your ONLY job is to REVIEW and LEARN:
+1. Review what was attempted
+2. Verify if the fix was successful
+3. Extract a reusable lesson for the memory database
+4. Suggest follow-up tasks if needed
+
+OUTPUT FORMAT:
+REVIEW: [What was done, was it successful?]
+LESSON: [topic] [A clear, reusable insight in 1-2 sentences]
+FOLLOW_UP: [Any remaining work needed, or "none"]
+RESULT: success=True/False reason=[why the overall bounty succeeded or failed]
+
+The LESSON should be:
+- Specific enough to be useful
+- General enough to apply to similar problems
+- Written for a future agent who knows nothing about this issue
 """
 
 def build_worker_prompt(todo: TodoItem, context: str, lessons: str = "") -> str:
@@ -706,15 +839,287 @@ def run_manager_step(client: LLMClient, tier: str = "fast", dry_run: bool = Fals
     return True
 
 # =============================================================================
+# BOUNTY HUNTER MODE (Dream Team 4-Phase Workflow)
+# =============================================================================
+
+@dataclass
+class BountyHunterState:
+    """State passed between bounty hunter phases"""
+    task_id: str
+    topic: str
+    issue_text: str
+    # Phase outputs
+    analysis: Optional[str] = None
+    plan: Optional[str] = None
+    implementation: Optional[str] = None
+    review: Optional[str] = None
+    # Status
+    phase: str = "analyze"
+    success: bool = False
+    error: Optional[str] = None
+
+
+def run_bounty_hunter_step(client: LLMClient, repo_root: str = None, dry_run: bool = False) -> bool:
+    """
+    Run the Bounty Hunter 4-phase workflow:
+      Phase 1: ANALYZE (Copilot)  - Understand the issue
+      Phase 2: PLAN (Claude)      - Design the solution
+      Phase 3: EXECUTE (Codex)    - Write the code
+      Phase 4: REVIEW (Claude)    - Extract lessons
+
+    Each phase uses its optimal model from BOUNTY_HUNTER_TIERS.
+    """
+    logger.info("=" * 60)
+    logger.info("BOUNTY HUNTER - Dream Team Workflow")
+    logger.info("=" * 60)
+    logger.info("  Phase 1: ANALYZE  → Copilot (GPT-5.1)")
+    logger.info("  Phase 2: PLAN     → Claude Opus")
+    logger.info("  Phase 3: EXECUTE  → Codex Max")
+    logger.info("  Phase 4: REVIEW   → Claude Opus")
+    logger.info("=" * 60)
+
+    # 1. Find and claim an open TODO
+    todo = find_open_todo()
+    if not todo:
+        logger.info("No OPEN tasks found.")
+        return False
+
+    state = BountyHunterState(
+        task_id=todo.task_id,
+        topic=todo.topic,
+        issue_text=todo.text
+    )
+
+    logger.info(f"Claimed Bounty: {state.task_id}")
+    logger.info(f"  Topic: {state.topic}")
+    logger.info(f"  Issue: {state.issue_text[:100]}...")
+
+    # Get context for all phases
+    context = get_task_context(state.task_id)
+    lessons = get_recent_lessons(state.topic)
+
+    # =========================================================================
+    # PHASE 1: ANALYZE (Copilot)
+    # =========================================================================
+    logger.info("\n" + "-" * 50)
+    logger.info("PHASE 1: ANALYZE (Copilot)")
+    logger.info("-" * 50)
+
+    tier = get_tier_for_phase("analyze", bounty_hunter=True)
+    logger.info(f"Using tier: {tier}")
+
+    analyze_prompt = f"""
+GITHUB ISSUE:
+{state.issue_text}
+
+CODEBASE CONTEXT:
+{context}
+
+RECENT LESSONS:
+{lessons}
+
+Analyze this issue and identify what needs to be fixed.
+"""
+
+    if not dry_run:
+        response = client.complete(analyze_prompt, tier=tier, system_prompt=ANALYST_SYSTEM_PROMPT, timeout=180)
+        if not response.success:
+            logger.error(f"ANALYZE failed: {response.error}")
+            update_todo_status(state.task_id, "OPEN")  # Release for retry
+            return False
+        state.analysis = response.text
+        logger.info(f"Analysis complete ({response.latency_ms}ms)")
+        logger.info(f"  {state.analysis[:200]}...")
+
+        # Log the analysis as an ATTEMPT
+        log_attempt(state.task_id, f"[ANALYZE] {state.analysis[:500]}", source="bounty-analyst")
+    else:
+        state.analysis = "[DRY RUN - Analysis skipped]"
+
+    # Check if ready to proceed
+    if "READY_FOR_PLANNING: no" in (state.analysis or "").upper():
+        logger.warning("Analyst says not ready for planning. Needs more info.")
+        update_todo_status(state.task_id, "BLOCKED")
+        log_result(state.task_id, False, "Analysis incomplete - needs more information", source="bounty-analyst")
+        return True
+
+    # =========================================================================
+    # PHASE 2: PLAN (Claude Opus)
+    # =========================================================================
+    logger.info("\n" + "-" * 50)
+    logger.info("PHASE 2: PLAN (Claude Opus)")
+    logger.info("-" * 50)
+
+    tier = get_tier_for_phase("plan", bounty_hunter=True)
+    logger.info(f"Using tier: {tier}")
+
+    plan_prompt = f"""
+ANALYST'S FINDINGS:
+{state.analysis}
+
+ORIGINAL ISSUE:
+{state.issue_text}
+
+Based on the analyst's findings, design a step-by-step implementation plan.
+"""
+
+    if not dry_run:
+        response = client.complete(plan_prompt, tier=tier, system_prompt=ARCHITECT_SYSTEM_PROMPT, timeout=300)
+        if not response.success:
+            logger.error(f"PLAN failed: {response.error}")
+            log_result(state.task_id, False, f"Planning failed: {response.error}", source="bounty-architect")
+            update_todo_status(state.task_id, "OPEN")  # Release for retry
+            return True
+        state.plan = response.text
+        logger.info(f"Plan complete ({response.latency_ms}ms)")
+        logger.info(f"  {state.plan[:200]}...")
+
+        # Log the plan
+        log_attempt(state.task_id, f"[PLAN] {state.plan[:500]}", source="bounty-architect")
+    else:
+        state.plan = "[DRY RUN - Plan skipped]"
+
+    # Check if ready to proceed
+    if "READY_FOR_CODING: no" in (state.plan or "").upper():
+        logger.warning("Architect says not ready for coding.")
+        update_todo_status(state.task_id, "BLOCKED")
+        log_result(state.task_id, False, "Plan incomplete - architecture needs revision", source="bounty-architect")
+        return True
+
+    # =========================================================================
+    # PHASE 3: EXECUTE (Codex Max)
+    # =========================================================================
+    logger.info("\n" + "-" * 50)
+    logger.info("PHASE 3: EXECUTE (Codex Max)")
+    logger.info("-" * 50)
+
+    tier = get_tier_for_phase("execute", bounty_hunter=True)
+    logger.info(f"Using tier: {tier}")
+
+    execute_prompt = f"""
+ARCHITECT'S PLAN:
+{state.plan}
+
+ORIGINAL ISSUE:
+{state.issue_text}
+
+REPOSITORY: {repo_root or 'current directory'}
+
+Implement the plan step by step. Output the code changes needed.
+"""
+
+    if not dry_run:
+        response = client.complete(execute_prompt, tier=tier, system_prompt=CODER_SYSTEM_PROMPT, timeout=600)
+        if not response.success:
+            logger.error(f"EXECUTE failed: {response.error}")
+            log_result(state.task_id, False, f"Execution failed: {response.error}", source="bounty-coder")
+            update_todo_status(state.task_id, "OPEN")  # Release for retry
+            return True
+        state.implementation = response.text
+        logger.info(f"Implementation complete ({response.latency_ms}ms)")
+        logger.info(f"  {state.implementation[:200]}...")
+
+        # Log the implementation
+        log_attempt(state.task_id, f"[EXECUTE] {state.implementation[:500]}", source="bounty-coder")
+    else:
+        state.implementation = "[DRY RUN - Execution skipped]"
+
+    # =========================================================================
+    # PHASE 4: REVIEW (Claude Opus)
+    # =========================================================================
+    logger.info("\n" + "-" * 50)
+    logger.info("PHASE 4: REVIEW (Claude Opus)")
+    logger.info("-" * 50)
+
+    tier = get_tier_for_phase("review", bounty_hunter=True)
+    logger.info(f"Using tier: {tier}")
+
+    review_prompt = f"""
+ORIGINAL ISSUE:
+{state.issue_text}
+
+ANALYST'S FINDINGS:
+{state.analysis[:1000] if state.analysis else 'N/A'}
+
+ARCHITECT'S PLAN:
+{state.plan[:1000] if state.plan else 'N/A'}
+
+CODER'S IMPLEMENTATION:
+{state.implementation[:2000] if state.implementation else 'N/A'}
+
+Review the entire bounty workflow and extract lessons for the memory database.
+"""
+
+    if not dry_run:
+        response = client.complete(review_prompt, tier=tier, system_prompt=TEACHER_SYSTEM_PROMPT, timeout=300)
+        if not response.success:
+            logger.error(f"REVIEW failed: {response.error}")
+            # Still mark as done if execution succeeded
+            state.review = "Review failed but implementation may have succeeded"
+        else:
+            state.review = response.text
+            logger.info(f"Review complete ({response.latency_ms}ms)")
+            logger.info(f"  {state.review[:200]}...")
+    else:
+        state.review = "[DRY RUN - Review skipped]"
+
+    # =========================================================================
+    # FINALIZE
+    # =========================================================================
+    logger.info("\n" + "-" * 50)
+    logger.info("FINALIZING BOUNTY")
+    logger.info("-" * 50)
+
+    # Parse success from review
+    overall_success = "success=true" in (state.review or "").lower()
+
+    # Extract and log lesson
+    lesson_match = re.search(r'LESSON:\s*\[?([^\]]+)\]?\s*(.+?)(?=FOLLOW_UP|RESULT|$)', state.review or "", re.DOTALL | re.IGNORECASE)
+    if lesson_match:
+        lesson_topic = lesson_match.group(1).strip()
+        lesson_text = lesson_match.group(2).strip()
+        log_lesson(lesson_topic, lesson_text, task_id=state.task_id, source="bounty-teacher")
+        logger.info(f"Lesson logged: [{lesson_topic}] {lesson_text[:80]}...")
+
+    # Log final result
+    log_result(state.task_id, overall_success, state.review[:500] if state.review else "Bounty completed", source="bounty-hunter")
+
+    # Update TODO status with doom loop detection
+    if overall_success:
+        status = "DONE"
+    else:
+        should_block, failure_count, doom_msg = check_doom_loop(state.task_id, True)
+        if should_block:
+            status = "BLOCKED"
+            logger.warning(doom_msg)
+        else:
+            status = "OPEN"  # Allow retry
+            logger.info(doom_msg)
+
+    update_todo_status(state.task_id, status)
+
+    logger.info("=" * 60)
+    logger.info("BOUNTY HUNTER COMPLETE")
+    logger.info(f"  Task: {state.task_id}")
+    logger.info(f"  Status: {status}")
+    logger.info(f"  Success: {overall_success}")
+    logger.info("=" * 60)
+
+    return True
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
 def main():
     parser = argparse.ArgumentParser(description="Manager/Worker orchestration loop (Windows Compatible)")
-    parser.add_argument("--mode", choices=["worker", "manager", "loop"], required=True,
-                        help="Operation mode")
+    parser.add_argument("--mode", choices=["worker", "manager", "loop", "bounty-hunter"], required=True,
+                        help="Operation mode: worker, manager, loop, or bounty-hunter")
     parser.add_argument("--tier", default="fast",
                         help="LLM tier to use (fast, code, smart, claude, codex, max). Default: fast")
+    parser.add_argument("--repo-root", default=None,
+                        help="Repository root for bounty-hunter mode (default: current directory)")
     parser.add_argument("--max-iterations", type=int, default=20,
                         help="Maximum iterations in loop mode. Default: 20")
     parser.add_argument("--max-todos", type=int, default=5,
@@ -765,6 +1170,40 @@ def main():
                 time.sleep(args.sleep)
 
         logger.info(f"\nLoop complete: {iterations} iterations, {todos_processed} TODOs processed")
+
+    elif args.mode == "bounty-hunter":
+        # Bounty Hunter Mode: 4-phase Dream Team workflow
+        # Ignores --tier flag, uses BOUNTY_HUNTER_TIERS:
+        #   ANALYZE  → Copilot
+        #   PLAN     → Claude Opus
+        #   EXECUTE  → Codex Max
+        #   REVIEW   → Claude Opus
+        logger.info("=" * 60)
+        logger.info("BOUNTY HUNTER SERVICE")
+        logger.info("=" * 60)
+        logger.info("Dream Team Configuration:")
+        for phase, tier in BOUNTY_HUNTER_TIERS.items():
+            logger.info(f"  {phase.upper():10} → {tier}")
+        logger.info("=" * 60)
+
+        iterations = 0
+        bounties_processed = 0
+
+        while iterations < args.max_iterations and bounties_processed < args.max_todos:
+            iterations += 1
+            logger.info(f"\n>>> Bounty iteration {iterations}/{args.max_iterations}")
+
+            if run_bounty_hunter_step(client, repo_root=args.repo_root, dry_run=args.dry_run):
+                bounties_processed += 1
+            else:
+                logger.info("No bounties available.")
+                break
+
+            if iterations < args.max_iterations:
+                logger.info(f"Sleeping {args.sleep}s...")
+                time.sleep(args.sleep)
+
+        logger.info(f"\nBounty Hunter complete: {iterations} iterations, {bounties_processed} bounties processed")
 
 if __name__ == "__main__":
     main()

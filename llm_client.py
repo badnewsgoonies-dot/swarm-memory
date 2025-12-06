@@ -58,6 +58,8 @@ from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 from dataclasses import dataclass, field
 
+import sys
+
 try:
     import requests
     HAS_REQUESTS = True
@@ -65,6 +67,12 @@ except ImportError:
     import urllib.request
     import urllib.error
     HAS_REQUESTS = False
+
+# Windows CLI handling - use .cmd extension for npm-installed CLIs
+IS_WINDOWS = sys.platform == 'win32'
+def _cli_cmd(name: str) -> str:
+    """Get the correct CLI command name for the current platform"""
+    return f"{name}.cmd" if IS_WINDOWS else name
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +192,14 @@ MODELS = {
         "model": "gpt-5.1",
         "effort": "high",
         "description": "GPT-5.1 - broad world knowledge",
+        "max_tokens": 8000,
+        "timeout": 300,
+    },
+    "gpt5.1": {
+        "provider": "codex",
+        "model": "gpt-5.1",
+        "effort": "high",
+        "description": "GPT-5.1 via Codex CLI - fastest coder (91s)",
         "max_tokens": 8000,
         "timeout": 300,
     },
@@ -439,9 +455,10 @@ class LLMClient:
         Sandbox workaround: If ~/.claude is not writable (e.g., in Codex sandbox),
         we set HOME=/tmp so Claude writes its config to /tmp/.claude instead.
         """
-        cmd = ["claude", "-p", prompt]
+        claude_cmd = _cli_cmd("claude")
+        cmd = [claude_cmd, "-p", prompt]
         if model and model != "default":
-            cmd = ["claude", "--model", model, "-p", prompt]
+            cmd = [claude_cmd, "--model", model, "-p", prompt]
 
         # Detect sandbox: check if ~/.claude is writable
         env = os.environ.copy()
@@ -484,9 +501,9 @@ class LLMClient:
 
         start = time.time()
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env, encoding='utf-8', errors='replace')
             latency = int((time.time() - start) * 1000)
-            response = (result.stdout + result.stderr).strip()
+            response = ((result.stdout or "") + (result.stderr or "")).strip()
 
             if result.returncode != 0 and not response:
                 return LLMResponse(
@@ -526,13 +543,15 @@ class LLMClient:
         effort_map = {"low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "extra high": "xhigh"}
         effort_arg = effort_map.get(effort, "high")
 
-        cmd = ["codex", "exec", "-m", model, "-c", f"model_reasoning_effort={effort_arg}", "--full-auto", prompt]
+        codex_cmd = _cli_cmd("codex")
+        cmd = [codex_cmd, "exec", "-m", model, "-c", f"model_reasoning_effort={effort_arg}", "--full-auto", prompt]
 
         start = time.time()
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, encoding='utf-8', errors='replace')
             latency = int((time.time() - start) * 1000)
-            response = (result.stdout + result.stderr).strip()
+            response = (result.stdout or "") + (result.stderr or "")
+            response = response.strip()
 
             if result.returncode != 0 and not response:
                 return LLMResponse(
@@ -595,13 +614,14 @@ class LLMClient:
         Uses GitHub Copilot's gpt-5.1 model via the copilot CLI.
         Strips usage stats from output.
         """
-        cmd = ["copilot", "-p", prompt, "--allow-all-tools"]
+        copilot_cmd = _cli_cmd("copilot")
+        cmd = [copilot_cmd, "-p", prompt, "--allow-all-tools"]
 
         start = time.time()
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, encoding='utf-8', errors='replace')
             latency = int((time.time() - start) * 1000)
-            output = (result.stdout + result.stderr).strip()
+            output = ((result.stdout or "") + (result.stderr or "")).strip()
 
             # Strip usage stats from output (everything after "Total usage est:")
             if "Total usage est:" in output:
@@ -749,7 +769,7 @@ class LLMClient:
 
         # Claude CLI
         try:
-            result = subprocess.run(["claude", "--version"], capture_output=True, timeout=5)
+            result = subprocess.run(["claude", "--version"], capture_output=True, timeout=5, encoding='utf-8', errors='replace')
             if result.returncode == 0:
                 results["claude"] = {"status": "available", "models": ALTERNATIVE_MODELS["claude"]}
             else:
@@ -759,7 +779,7 @@ class LLMClient:
 
         # Codex CLI
         try:
-            result = subprocess.run(["codex", "--version"], capture_output=True, timeout=5)
+            result = subprocess.run(["codex", "--version"], capture_output=True, timeout=5, encoding='utf-8', errors='replace')
             if result.returncode == 0:
                 results["codex"] = {"status": "available", "models": ALTERNATIVE_MODELS["codex"]}
             else:
@@ -769,7 +789,7 @@ class LLMClient:
 
         # Copilot CLI
         try:
-            result = subprocess.run(["copilot", "--version"], capture_output=True, timeout=5)
+            result = subprocess.run(["copilot", "--version"], capture_output=True, timeout=5, encoding='utf-8', errors='replace')
             if result.returncode == 0:
                 results["copilot"] = {"status": "available", "models": ALTERNATIVE_MODELS["copilot"]}
             else:
