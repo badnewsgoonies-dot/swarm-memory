@@ -29,7 +29,6 @@ Safety:
 
 import argparse
 import atexit
-import fcntl
 import json
 import signal
 import subprocess
@@ -44,6 +43,13 @@ from contextlib import contextmanager
 from typing import List, Tuple, Optional, Dict, Any, Set
 from datetime import datetime, timedelta
 from pathlib import Path
+
+# Cross-platform file locking
+IS_WINDOWS = sys.platform == 'win32'
+if IS_WINDOWS:
+    import msvcrt
+else:
+    import fcntl
 
 # Import governor for action enforcement
 from governor import Governor
@@ -62,7 +68,7 @@ def file_lock(file_path: Path, timeout: float = 30.0):
     """
     Context manager for exclusive file locking to prevent race conditions.
 
-    Uses fcntl.flock for Unix systems. Blocks until lock is acquired or timeout.
+    Uses msvcrt on Windows, fcntl.flock on Unix. Blocks until lock is acquired or timeout.
 
     Args:
         file_path: Path to the file to lock
@@ -80,43 +86,69 @@ def file_lock(file_path: Path, timeout: float = 30.0):
     """
     lock_path = file_path.with_suffix(file_path.suffix + ".lock")
     lock_fd = None
+    lock_file = None
     start_time = time.time()
 
     try:
-        # Create/open lock file
-        lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
-
-        # Try to acquire lock with timeout
-        while True:
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break  # Lock acquired
-            except BlockingIOError:
-                elapsed = time.time() - start_time
-                if elapsed >= timeout:
-                    raise TimeoutError(
-                        f"Could not acquire lock on {file_path} within {timeout}s. "
-                        f"Another process may be editing this file."
-                    )
-                time.sleep(0.1)  # Brief sleep before retry
+        if IS_WINDOWS:
+            # Windows: use msvcrt.locking
+            lock_file = open(str(lock_path), 'w')
+            while True:
+                try:
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    break  # Lock acquired
+                except IOError:
+                    elapsed = time.time() - start_time
+                    if elapsed >= timeout:
+                        raise TimeoutError(
+                            f"Could not acquire lock on {file_path} within {timeout}s. "
+                            f"Another process may be editing this file."
+                        )
+                    time.sleep(0.1)
+        else:
+            # Unix: use fcntl.flock
+            lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+            while True:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break  # Lock acquired
+                except BlockingIOError:
+                    elapsed = time.time() - start_time
+                    if elapsed >= timeout:
+                        raise TimeoutError(
+                            f"Could not acquire lock on {file_path} within {timeout}s. "
+                            f"Another process may be editing this file."
+                        )
+                    time.sleep(0.1)
 
         yield  # Lock held, allow work
 
     finally:
-        if lock_fd is not None:
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            except Exception:
-                pass
-            try:
-                os.close(lock_fd)
-            except Exception:
-                pass
-            # Clean up lock file (best effort)
-            try:
-                lock_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+        if IS_WINDOWS:
+            if lock_file is not None:
+                try:
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                except Exception:
+                    pass
+                try:
+                    lock_file.close()
+                except Exception:
+                    pass
+        else:
+            if lock_fd is not None:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                except Exception:
+                    pass
+                try:
+                    os.close(lock_fd)
+                except Exception:
+                    pass
+        # Clean up lock file (best effort)
+        try:
+            lock_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def _cleanup_children():
@@ -1538,8 +1570,9 @@ def execute_action(action_data, repo_root: Path, unrestricted: bool, state=None)
 
         # subprocess already imported at module level (line 32)
         script_path = Path(__file__).resolve()
+        python_cmd = "python" if IS_WINDOWS else "python3"
         cmd = [
-            "python3", str(script_path),
+            python_cmd, str(script_path),
             "--objective", sub_objective,
             "--repo-root", sub_repo,
             "--unrestricted",

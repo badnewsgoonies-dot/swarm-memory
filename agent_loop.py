@@ -37,8 +37,11 @@ from datetime import datetime, timezone
 SCRIPT_DIR = Path(__file__).parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-# Ensure OLLAMA_HOST is set correctly for Windows
-if "OLLAMA_HOST" not in os.environ:
+# Fix OLLAMA_HOST if it's set to 0.0.0.0 (common server-side config)
+# or if it's not set at all
+if os.environ.get("OLLAMA_HOST") == "0.0.0.0":
+    os.environ["OLLAMA_HOST"] = "http://localhost:11434"
+elif "OLLAMA_HOST" not in os.environ:
     os.environ["OLLAMA_HOST"] = "http://localhost:11434"
 
 from llm_client import LLMClient, LLMResponse
@@ -140,6 +143,41 @@ def write_chunk(anchor_type: str, text: str, topic: str = None,
 # CONTEXT BUILDING (Native Python - replaces mem-task-context.sh)
 # =============================================================================
 
+# Stopwords to filter out from keyword extraction
+STOPWORDS = {
+    'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of',
+    'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'been', 'be',
+    'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+    'should', 'may', 'might', 'must', 'shall', 'can', 'this', 'that', 'these',
+    'those', 'it', 'its', 'you', 'your', 'we', 'our', 'they', 'their', 'what',
+    'which', 'who', 'when', 'where', 'why', 'how', 'all', 'each', 'every',
+    'both', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'not', 'only',
+    'same', 'than', 'too', 'very', 'just', 'also', 'now', 'here', 'there',
+    'then', 'so', 'if', 'about', 'into', 'over', 'after', 'before', 'between',
+    'under', 'again', 'further', 'once', 'during', 'while', 'find', 'analyze',
+    'identify', 'explain', 'describe', 'summarize', 'provide', 'specific',
+    'function', 'responsible', 'based', 'allowed', 'current', 'system', 'agent'
+}
+
+def extract_keywords(text: str, min_len: int = 4, max_keywords: int = 5) -> List[str]:
+    """Extract meaningful keywords from task text for context search"""
+    # Remove punctuation and split
+    words = re.findall(r"[a-zA-Z0-9_-]+", text.lower())
+    # Filter: not stopwords, long enough, quoted phrases get priority
+    keywords = []
+
+    # Extract quoted phrases first (e.g., 'Project Ciphers')
+    quoted = re.findall(r"'([^']+)'", text)
+    keywords.extend(quoted)
+
+    # Then add individual significant words
+    for word in words:
+        if word not in STOPWORDS and len(word) >= min_len:
+            if word not in keywords:
+                keywords.append(word)
+
+    return keywords[:max_keywords]
+
 def get_task_context(task_id: str, limit: int = 20) -> str:
     """Gather context for a task (TODO + related memories)"""
     conn = get_db_connection()
@@ -174,6 +212,30 @@ def get_task_context(task_id: str, limit: int = 20) -> str:
     """
     cursor.execute(query, (topic, db_id, task_id, limit))
     rows = cursor.fetchall()
+
+    # 3. Extract keywords from task text and search for relevant context
+    # This helps find context even when topics don't match
+    keywords = extract_keywords(text)
+    if keywords:
+        kw_query = """
+            SELECT anchor_type, anchor_topic, text, anchor_choice, timestamp, task_id
+            FROM chunks
+            WHERE anchor_type IN ('d','f','n','a','c')
+              AND id != ?
+              AND ({})
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """.format(" OR ".join(["text LIKE ?" for _ in keywords]))
+        params = [db_id] + [f"%{kw}%" for kw in keywords] + [limit]
+        cursor.execute(kw_query, params)
+        kw_rows = cursor.fetchall()
+        # Add keyword matches that aren't already in rows
+        seen_texts = {r[2] for r in rows}
+        for r in kw_rows:
+            if r[2] not in seen_texts:
+                rows.append(r)
+                seen_texts.add(r[2])
+
     conn.close()
 
     type_map = {
@@ -251,6 +313,60 @@ def get_recent_results(hours: int = 24, limit: int = 10) -> str:
     return "\n".join(lines) if lines else "(No recent results)"
 
 # =============================================================================
+# DOOM LOOP DETECTOR
+# =============================================================================
+
+DOOM_LOOP_THRESHOLD = 3  # Auto-BLOCK after this many consecutive failures
+
+def get_consecutive_failures(task_id: str) -> int:
+    """
+    Count consecutive failures for a task by checking recent RESULT glyphs.
+    Returns the number of consecutive 'failure' results (most recent first).
+    Stops counting at the first 'success'.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Get recent RESULT glyphs for this task, ordered by most recent first
+    cursor.execute("""
+        SELECT anchor_choice FROM chunks
+        WHERE anchor_type='R' AND task_id = ?
+        ORDER BY timestamp DESC
+        LIMIT 10
+    """, (task_id,))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    consecutive_failures = 0
+    for (choice,) in rows:
+        if choice == "failure":
+            consecutive_failures += 1
+        else:
+            break  # Stop at first success
+
+    return consecutive_failures
+
+def check_doom_loop(task_id: str, current_failure: bool) -> tuple:
+    """
+    Check if task is in a doom loop after the current result.
+
+    Returns:
+        (should_block: bool, failure_count: int, message: str)
+    """
+    if not current_failure:
+        return (False, 0, "Task succeeded")
+
+    # Count failures including the one we're about to log
+    consecutive = get_consecutive_failures(task_id) + 1  # +1 for current failure
+
+    if consecutive >= DOOM_LOOP_THRESHOLD:
+        return (True, consecutive, f"DOOM LOOP: {consecutive} consecutive failures, auto-blocking")
+    else:
+        remaining = DOOM_LOOP_THRESHOLD - consecutive
+        return (False, consecutive, f"Failure {consecutive}/{DOOM_LOOP_THRESHOLD}, {remaining} retries remaining")
+
+# =============================================================================
 # TODO MANAGEMENT (Native Python)
 # =============================================================================
 
@@ -261,7 +377,7 @@ def find_open_todo() -> Optional[TodoItem]:
 
     # Priority: H > M > L, then Oldest first (FIFO)
     cursor.execute("""
-        SELECT id, text, anchor_topic, importance, links
+        SELECT id, text, anchor_topic, importance, links, task_id
         FROM chunks
         WHERE anchor_type='T' AND anchor_choice='OPEN'
         ORDER BY
@@ -275,16 +391,17 @@ def find_open_todo() -> Optional[TodoItem]:
         conn.close()
         return None
 
-    db_id, text, topic, imp, links = row
+    db_id, text, topic, imp, links, stored_task_id = row
 
-    # Extract task_id from links JSON
-    task_id = f"db-{db_id}"
-    try:
-        if links:
-            data = json.loads(links)
-            task_id = data.get("id", task_id)
-    except:
-        pass
+    # Use stored task_id if available, otherwise extract from links or use db_id
+    task_id = stored_task_id or f"db-{db_id}"
+    if not stored_task_id:
+        try:
+            if links:
+                data = json.loads(links)
+                task_id = data.get("id", task_id)
+        except:
+            pass
 
     # Mark IN_PROGRESS
     cursor.execute("UPDATE chunks SET anchor_choice='IN_PROGRESS' WHERE id=?", (db_id,))
@@ -501,14 +618,28 @@ def run_worker_step(client: LLMClient, tier: str = "fast", dry_run: bool = False
     if output.lesson_text:
         log_lesson(output.lesson_topic, output.lesson_text, task_id=todo.task_id, source=source)
 
-    # 6. Update TODO status
-    status = "DONE" if output.result_success else "BLOCKED"
+    # 6. Update TODO status with doom loop detection
+    if output.result_success:
+        status = "DONE"
+        doom_msg = ""
+    else:
+        # Check doom loop before deciding status
+        should_block, failure_count, doom_msg = check_doom_loop(todo.task_id, True)
+        if should_block:
+            status = "BLOCKED"
+            logger.warning(doom_msg)
+        else:
+            status = "OPEN"  # Allow retry
+            logger.info(doom_msg)
+
     update_todo_status(todo.task_id, status)
 
     logger.info("-" * 40)
     logger.info("Worker step complete:")
     logger.info(f"  Task: {todo.task_id}")
     logger.info(f"  Status: {status}")
+    if doom_msg and status == "OPEN":
+        logger.info(f"  Doom Loop: {doom_msg}")
     if output.lesson_text:
         logger.info(f"  Lesson: {output.lesson_text[:80]}...")
 

@@ -69,7 +69,14 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # Environment configuration
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://10.0.0.122:11434")
+# Fix OLLAMA_HOST if it's set to 0.0.0.0 (common server-side config)
+_raw_ollama_host = os.environ.get("OLLAMA_HOST", "")
+if _raw_ollama_host == "0.0.0.0" or not _raw_ollama_host:
+    OLLAMA_HOST = "http://localhost:11434"
+elif not _raw_ollama_host.startswith("http"):
+    OLLAMA_HOST = f"http://{_raw_ollama_host}"
+else:
+    OLLAMA_HOST = _raw_ollama_host
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 VERBOSE = os.environ.get("LLM_VERBOSE", "0") == "1"
 
