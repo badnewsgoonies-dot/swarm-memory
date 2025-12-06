@@ -1010,3 +1010,6 @@
 ["c", "conversation", "commit and ppppppppppppppppppppush", "user", null, "2025-12-04T13:12:52Z", "89a8ed00", "hook-UserPromptSubmit", null, null, null, null, null]
 ["f", "ollama", "Added mistral:7b (4.4GB) for better reasoning. Test: 15.8 tok/s generation, 130 tok/s prompt eval on GTX 1060 6GB. Passed sheep logic puzzle correctly.", null, null, "2025-12-04T14:15:35Z", null, null, null, null, null, null, null]
 ["f", "training", "Created cloud LLM training setup in training/ folder. Uses RunPod + unsloth for LoRA fine-tuning. Files: train_lora.py, data_template.jsonl, README.md, runpod_setup.sh. Estimated cost: /usr/bin/bash.10- for 100-1000 examples on A4000.", null, null, "2025-12-04T14:26:24Z", null, null, null, null, null, null, null]
+["c", "conversation", "Testing hook manually from bash", "user", null, "2025-12-06T01:39:16Z", "test-123", "hook-UserPromptSubmit", null, null, null, null, null]
+["c", "conversation", "ok test test trying out the hook agian", "user", null, "2025-12-06T01:44:43Z", "compact-", "hook-UserPromptSubmit", null, null, null, null, null]
+["c", "chat", "test message for hook verification", "user", null, "2025-12-06T01:47:00Z", null, null, null, null, null, null, null]
