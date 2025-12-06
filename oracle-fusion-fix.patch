@@ -1,0 +1,82 @@
+From f79ba6070ff1c4dade5a034a983bd124ab65177e Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 6 Dec 2025 19:30:52 +0000
+Subject: [PATCH] fix: use HCM API for employee endpoint and correct category
+
+- Changed get-employee action to use /hcmRestApi/resources/latest instead of
+  /fscmRestApi (workers endpoint is in HCM, not Financial API)
+- Updated makeOracleApiCall to accept optional apiBase parameter for flexibility
+- Changed piece category from BUSINESS_INTELLIGENCE to ACCOUNTING
+- Updated tests to expect correct HCM endpoint URL
+---
+ packages/pieces/community/oracle-fusion-erp/src/index.ts     | 2 +-
+ .../oracle-fusion-erp/src/lib/actions/get-employee.ts        | 4 +++-
+ .../pieces/community/oracle-fusion-erp/src/lib/common.ts     | 5 +++--
+ .../community/oracle-fusion-erp/test/get-employee.test.ts    | 2 +-
+ 4 files changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/packages/pieces/community/oracle-fusion-erp/src/index.ts b/packages/pieces/community/oracle-fusion-erp/src/index.ts
+index 5895e71476..82d697c97c 100644
+--- a/packages/pieces/community/oracle-fusion-erp/src/index.ts
++++ b/packages/pieces/community/oracle-fusion-erp/src/index.ts
+@@ -55,7 +55,7 @@ export const oracleFusionErp = createPiece({
+   minimumSupportedRelease: '0.30.0',
+   logoUrl: 'https://cdn.activepieces.com/pieces/oracle.png',
+   authors: ['activepieces'],
+-  categories: [PieceCategory.BUSINESS_INTELLIGENCE],
++  categories: [PieceCategory.ACCOUNTING],
+   auth: oracleFusionErpAuth,
+   actions: [
+     getEmployeeAction,
+diff --git a/packages/pieces/community/oracle-fusion-erp/src/lib/actions/get-employee.ts b/packages/pieces/community/oracle-fusion-erp/src/lib/actions/get-employee.ts
+index 63713991f7..13a8ccefe7 100644
+--- a/packages/pieces/community/oracle-fusion-erp/src/lib/actions/get-employee.ts
++++ b/packages/pieces/community/oracle-fusion-erp/src/lib/actions/get-employee.ts
+@@ -23,7 +23,9 @@ export const getEmployeeAction = createAction({
+     return await makeOracleApiCall(
+       auth,
+       `/workers/${workerId}`,
+-      HttpMethod.GET
++      HttpMethod.GET,
++      undefined,
++      '/hcmRestApi/resources/latest'
+     );
+   },
+ });
+diff --git a/packages/pieces/community/oracle-fusion-erp/src/lib/common.ts b/packages/pieces/community/oracle-fusion-erp/src/lib/common.ts
+index 8cf162b0e4..4fe0ba75c7 100644
+--- a/packages/pieces/community/oracle-fusion-erp/src/lib/common.ts
++++ b/packages/pieces/community/oracle-fusion-erp/src/lib/common.ts
+@@ -10,13 +10,14 @@ export async function makeOracleApiCall<T>(
+   auth: OracleFusionAuth,
+   endpoint: string,
+   method: HttpMethod = HttpMethod.GET,
+-  body?: unknown
++  body?: unknown,
++  apiBase: string = '/fscmRestApi/resources/latest'
+ ): Promise<T> {
+   const accessToken = await getOAuthToken(auth);
+ 
+   const request: HttpRequest = {
+     method,
+-    url: `${auth.baseUrl}/fscmRestApi/resources/latest${endpoint}`,
++    url: `${auth.baseUrl}${apiBase}${endpoint}`,
+     authentication: {
+       type: AuthenticationType.BEARER_TOKEN,
+       token: accessToken,
+diff --git a/packages/pieces/community/oracle-fusion-erp/test/get-employee.test.ts b/packages/pieces/community/oracle-fusion-erp/test/get-employee.test.ts
+index 8a02d4de78..b9f89e699e 100644
+--- a/packages/pieces/community/oracle-fusion-erp/test/get-employee.test.ts
++++ b/packages/pieces/community/oracle-fusion-erp/test/get-employee.test.ts
+@@ -58,7 +58,7 @@ describe('getEmployeeAction', () => {
+     expect(httpClient.sendRequest).toHaveBeenCalledWith(
+       expect.objectContaining({
+         method: HttpMethod.GET,
+-        url: 'https://test-oracle.example.com/fscmRestApi/resources/latest/workers/12345',
++        url: 'https://test-oracle.example.com/hcmRestApi/resources/latest/workers/12345',
+       })
+     );
+     expect(result).toEqual(mockEmployee);
+-- 
+2.43.0
+
