@@ -257,6 +257,29 @@ MODELS = {
         "timeout": 120,
     },
 
+    # Gemini CLI - Google's Gemini models
+    "gemini": {
+        "provider": "gemini",
+        "model": "gemini-2.5-pro",
+        "description": "Gemini 2.5 Pro via CLI",
+        "max_tokens": 8000,
+        "timeout": 180,
+    },
+    "gemini-pro": {
+        "provider": "gemini",
+        "model": "gemini-2.5-pro",
+        "description": "Gemini 2.5 Pro - most capable",
+        "max_tokens": 8000,
+        "timeout": 180,
+    },
+    "gemini-flash": {
+        "provider": "gemini",
+        "model": "gemini-2.5-flash",
+        "description": "Gemini 2.5 Flash - faster",
+        "max_tokens": 8000,
+        "timeout": 120,
+    },
+
     # Naive prompt-only LM - no pretraining, uses prompt statistics only
     "naive": {
         "provider": "naive",
@@ -274,6 +297,7 @@ ALTERNATIVE_MODELS = {
     "claude": ["opus", "sonnet", "haiku"],
     "codex": ["gpt-5.1-codex-max", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.1"],
     "copilot": ["gpt-5.1"],
+    "gemini": ["gemini-2.5-pro", "gemini-2.5-flash"],
 }
 
 # Fallback chain: if one fails, try next
@@ -553,6 +577,16 @@ class LLMClient:
             response = (result.stdout or "") + (result.stderr or "")
             response = response.strip()
 
+            # Strip CLI metadata from output
+            # Codex outputs: response, then "--------", then verbose session log
+            # We only want the content before the separator
+            if "--------" in response:
+                response = response.split("--------")[0].strip()
+            # Also strip version lines (e.g., "OpenAI Codex v0.63.0")
+            if "OpenAI Codex" in response:
+                lines = response.split('\n')
+                response = '\n'.join(l for l in lines if not l.startswith("OpenAI Codex")).strip()
+
             if result.returncode != 0 and not response:
                 return LLMResponse(
                     text="", model=model, provider="codex", tier="",
@@ -609,17 +643,19 @@ class LLMClient:
         )
 
     def _call_copilot(self, prompt: str, model: str = "gpt-5.1", max_tokens: int = 4000, timeout: int = 120) -> LLMResponse:
-        """Call Copilot CLI (copilot -p)
+        """Call Copilot CLI via stdin
 
         Uses GitHub Copilot's gpt-5.1 model via the copilot CLI.
+        Passes prompt via stdin to avoid Windows command-line length limit (8191 chars).
         Strips usage stats from output.
         """
         copilot_cmd = _cli_cmd("copilot")
-        cmd = [copilot_cmd, "-p", prompt, "--allow-all-tools"]
+        cmd = [copilot_cmd, "--allow-all-tools"]
 
         start = time.time()
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, encoding='utf-8', errors='replace')
+            # Use stdin to avoid Windows command-line length limit
+            result = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=timeout, encoding='utf-8', errors='replace')
             latency = int((time.time() - start) * 1000)
             output = ((result.stdout or "") + (result.stderr or "")).strip()
 
@@ -652,6 +688,68 @@ class LLMClient:
         except Exception as e:
             return LLMResponse(
                 text="", model=model, provider="copilot", tier="",
+                success=False, error=str(e),
+            )
+
+    def _call_gemini(self, prompt: str, model: str = "gemini-2.5-pro", max_tokens: int = 8000, timeout: int = 180) -> LLMResponse:
+        """Call Gemini CLI (gemini)
+
+        Uses Google's Gemini models via the gemini CLI.
+        The prompt is passed via stdin with -o text for clean output.
+        """
+        gemini_cmd = _cli_cmd("gemini")
+
+        # Build command - gemini takes prompt as positional arg or via stdin
+        # Using -o text for clean text output (no JSON/stream)
+        cmd = [gemini_cmd, "-o", "text"]
+        if model and model != "default":
+            cmd.extend(["--model", model])
+
+        start = time.time()
+        try:
+            # Pass prompt via stdin
+            result = subprocess.run(
+                cmd,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                encoding='utf-8',
+                errors='replace'
+            )
+            latency = int((time.time() - start) * 1000)
+            output = ((result.stdout or "") + (result.stderr or "")).strip()
+
+            # Strip "Loaded cached credentials." line if present
+            if "Loaded cached credentials" in output:
+                lines = output.split('\n')
+                output = '\n'.join(l for l in lines if "Loaded cached credentials" not in l).strip()
+
+            if result.returncode != 0 and not output:
+                return LLMResponse(
+                    text="", model=model, provider="gemini", tier="",
+                    latency_ms=latency, success=False,
+                    error=f"Gemini CLI failed: exit {result.returncode}",
+                )
+
+            return LLMResponse(
+                text=output, model=model, provider="gemini", tier="",
+                latency_ms=latency, success=True,
+            )
+        except subprocess.TimeoutExpired:
+            return LLMResponse(
+                text="", model=model, provider="gemini", tier="",
+                latency_ms=int((time.time() - start) * 1000),
+                success=False, error="Gemini CLI timeout",
+            )
+        except FileNotFoundError:
+            return LLMResponse(
+                text="", model=model, provider="gemini", tier="",
+                success=False, error="Gemini CLI not found",
+            )
+        except Exception as e:
+            return LLMResponse(
+                text="", model=model, provider="gemini", tier="",
                 success=False, error=str(e),
             )
 
@@ -718,6 +816,8 @@ class LLMClient:
             response = self._call_copilot(full_prompt, config["model"], max_tokens, timeout)
         elif config["provider"] == "naive":
             response = self._call_naive(full_prompt, config["model"], max_tokens, timeout)
+        elif config["provider"] == "gemini":
+            response = self._call_gemini(full_prompt, config["model"], max_tokens, timeout)
         else:
             response = LLMResponse(
                 text="", model=config["model"], provider=config["provider"], tier=tier,

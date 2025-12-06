@@ -328,10 +328,10 @@ def get_recent_results(hours: int = 24, limit: int = 10) -> str:
 #   REVIEW   → Claude   (extracts lessons for memory)
 
 BOUNTY_HUNTER_TIERS = {
-    "analyze": "copilot",      # Reader: handles large context, tuned for "explain this bug"
-    "plan": "claude",          # Architect: robust step-by-step plans, catches edge cases
-    "execute": "gpt5.1",       # Coder: GPT-5.1 with high effort - fastest at 91s
-    "review": "claude",        # Teacher: cleanest, most human-readable lessons
+    "analyze": "copilot",       # Reader: fast read, large context
+    "plan": "claude",           # Philosopher: deep thought, robust plans
+    "execute": "codex-max-low", # Speed Demon: 2.5s execution loop
+    "review": "gpt5.1",         # Balanced Pro: GPT-5.1 high-effort for lessons
 }
 
 # Legacy mapping (can be overridden via env vars for non-bounty-hunter modes)
@@ -347,6 +347,99 @@ def get_tier_for_phase(phase: str, bounty_hunter: bool = False, fallback: str = 
     if bounty_hunter:
         return BOUNTY_HUNTER_TIERS.get(phase.lower(), fallback)
     return PHASE_TIERS.get(phase.lower(), fallback)
+
+# =============================================================================
+# PERSONA / ROLE RULES SYSTEM
+# =============================================================================
+# Each persona injects domain expertise into the agent based on task topic.
+# Personas live in prompts/ directory and are selected by topic keywords.
+
+PROMPTS_DIR = SCRIPT_DIR / "prompts"
+
+# Map topic keywords to persona files
+PERSONA_MAP = {
+    # Architecture/Planning keywords
+    "architect": "persona_architect.txt",
+    "plan": "persona_architect.txt",
+    "structure": "persona_architect.txt",
+    "api": "persona_architect.txt",
+    "schema": "persona_architect.txt",
+
+    # Coding keywords
+    "code": "persona_coder.txt",
+    "implement": "persona_coder.txt",
+    "fix": "persona_coder.txt",
+    "bug": "persona_coder.txt",
+    "refactor": "persona_coder.txt",
+    "function": "persona_coder.txt",
+    "port": "persona_coder.txt",
+
+    # UI/UX keywords
+    "ui": "persona_designer.txt",
+    "ux": "persona_designer.txt",
+    "design": "persona_designer.txt",
+    "frontend": "persona_designer.txt",
+    "css": "persona_designer.txt",
+    "layout": "persona_designer.txt",
+    "component": "persona_designer.txt",
+
+    # QA keywords
+    "test": "persona_qa.txt",
+    "qa": "persona_qa.txt",
+    "verify": "persona_qa.txt",
+    "audit": "persona_qa.txt",
+    "check": "persona_qa.txt",
+    "validate": "persona_qa.txt",
+
+    # Product keywords
+    "product": "persona_product.txt",
+    "feature": "persona_product.txt",
+    "requirement": "persona_product.txt",
+    "priority": "persona_product.txt",
+    "scope": "persona_product.txt",
+}
+
+# Default persona if no match found
+DEFAULT_PERSONA = "persona_coder.txt"
+
+
+def load_persona(persona_file: str) -> str:
+    """Load a persona file from the prompts directory"""
+    path = PROMPTS_DIR / persona_file
+    if not path.exists():
+        logger.warning(f"Persona file not found: {path}")
+        return ""
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return f.read().strip()
+    except Exception as e:
+        logger.error(f"Error loading persona {persona_file}: {e}")
+        return ""
+
+
+def get_persona_for_topic(topic: str, task_text: str = "") -> str:
+    """
+    Select and load the appropriate persona based on topic and task text.
+
+    Priority:
+    1. Exact topic match in PERSONA_MAP
+    2. Keyword match in topic or task_text
+    3. Default persona (coder)
+    """
+    combined = f"{topic} {task_text}".lower()
+
+    # Check for keyword matches
+    for keyword, persona_file in PERSONA_MAP.items():
+        if keyword in combined:
+            persona = load_persona(persona_file)
+            if persona:
+                logger.debug(f"Selected persona: {persona_file} (matched '{keyword}')")
+                return persona
+
+    # Fall back to default
+    logger.debug(f"Using default persona: {DEFAULT_PERSONA}")
+    return load_persona(DEFAULT_PERSONA)
+
 
 # =============================================================================
 # DOOM LOOP DETECTOR
@@ -722,14 +815,23 @@ def run_worker_step(client: LLMClient, tier: str = "fast", dry_run: bool = False
 
     logger.info(f"Context length: {len(context)} chars")
 
+    # 2b. Load persona based on topic/task
+    persona = get_persona_for_topic(todo.topic, todo.text)
+    if persona:
+        logger.info(f"Persona loaded: {len(persona)} chars")
+
     if dry_run:
         logger.info("Dry run - skipping LLM call")
         update_todo_status(todo.task_id, "OPEN")  # Release task
         return True
 
-    # 3. Call LLM
+    # 3. Call LLM with persona-enhanced system prompt
+    system_prompt = WORKER_SYSTEM_PROMPT
+    if persona:
+        system_prompt = f"{persona}\n\n---\n\n{WORKER_SYSTEM_PROMPT}"
+
     logger.info(f"Calling LLM (tier={tier})...")
-    response = client.complete(prompt, tier=tier, system_prompt=WORKER_SYSTEM_PROMPT, timeout=120)
+    response = client.complete(prompt, tier=tier, system_prompt=system_prompt, timeout=120)
 
     if not response.success:
         logger.error(f"LLM call failed: {response.error}")
