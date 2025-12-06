@@ -1168,13 +1168,14 @@ ARCHITECT'S PLAN:
 ORIGINAL ISSUE:
 {state.issue_text}
 
-REPOSITORY: {repo_root or 'current directory'}
+REPOSITORY: {repo_root}
 
-Implement the plan step by step. Output the code changes needed.
+You are working in the repository directory. WRITE the necessary files to implement the plan.
+Create or modify files as needed. Do NOT just describe changes - actually create the files.
 """
 
     if not dry_run:
-        response = client.complete(execute_prompt, tier=tier, system_prompt=CODER_SYSTEM_PROMPT, timeout=600)
+        response = client.complete(execute_prompt, tier=tier, system_prompt=CODER_SYSTEM_PROMPT, timeout=600, cwd=repo_root)
         if not response.success:
             logger.error(f"EXECUTE failed: {response.error}")
             log_result(state.task_id, False, f"Execution failed: {response.error}", source="bounty-coder")

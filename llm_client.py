@@ -557,11 +557,12 @@ class LLMClient:
                 success=False, error=str(e),
             )
 
-    def _call_codex(self, prompt: str, model: str = "gpt-5.1-codex-max", effort: str = "high", max_tokens: int = 4000, timeout: int = 300) -> LLMResponse:
+    def _call_codex(self, prompt: str, model: str = "gpt-5.1-codex-max", effort: str = "high", max_tokens: int = 4000, timeout: int = 300, cwd: str = None) -> LLMResponse:
         """Call Codex CLI (codex exec)
 
         Models: gpt-5.1-codex-max, gpt-5.1-codex, gpt-5.1-codex-mini, gpt-5.1
         Effort: low, medium, high, xhigh (via -c model_reasoning_effort=X)
+        cwd: Working directory for Codex (target repo for writes)
         """
         # Map effort names to codex config format
         effort_map = {"low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "extra high": "xhigh"}
@@ -572,7 +573,7 @@ class LLMClient:
 
         start = time.time()
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, encoding='utf-8', errors='replace')
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, encoding='utf-8', errors='replace', cwd=cwd)
             latency = int((time.time() - start) * 1000)
             response = (result.stdout or "") + (result.stderr or "")
             response = response.strip()
@@ -783,6 +784,7 @@ class LLMClient:
         timeout: int = None,
         fallback: bool = True,
         system_prompt: str = None,
+        cwd: str = None,
     ) -> LLMResponse:
         """Complete a prompt using specified tier"""
 
@@ -811,7 +813,7 @@ class LLMClient:
             response = self._call_claude(full_prompt, config["model"], max_tokens, timeout)
         elif config["provider"] == "codex":
             effort = config.get("effort", "high")
-            response = self._call_codex(full_prompt, config["model"], effort, max_tokens, timeout)
+            response = self._call_codex(full_prompt, config["model"], effort, max_tokens, timeout, cwd=cwd)
         elif config["provider"] == "copilot":
             response = self._call_copilot(full_prompt, config["model"], max_tokens, timeout)
         elif config["provider"] == "naive":
